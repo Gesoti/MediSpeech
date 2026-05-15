@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "medispeech-api"
+version = "0.1.0"
+description = "Medical speech transcription and reporting system"
+requires-python = ">=3.12"
+authors = [
+    {name = "MediSpeech Team"}
+]
+
+dependencies = [
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "sqlalchemy[asyncio]>=2.0.23",
+    "alembic>=1.13.1",
+    "pydantic-settings>=2.1.0",
+    "pydantic[email]>=2.5.0",
+    "psycopg2-binary>=2.9.9",
+    "asyncpg>=0.29.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+    "openai-whisper>=20231117",
+    "librosa>=0.10.0",
+    "langgraph>=0.0.19",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.10",
+    "transformers>=4.36",
+    "torch>=2.1",
+    "sentence-transformers>=2.2",
+    "sacremoses>=0.0.53",
+    "langfuse>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.3",
+    "pytest-asyncio>=0.21.1",
+    "httpx>=0.25.2",
+    "black>=23.12.0",
+    "mypy>=1.7.1",
+    "ruff>=0.1.11",
+    "aiosqlite>=0.19.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+check_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PIE", "PT", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --strict-markers"
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests",
+]
