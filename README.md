@@ -28,37 +28,37 @@ Browser (React + Vite)
         │
         │  REST + SSE (port 5173 in dev, proxied to 8000)
         ▼
-┌─────────────────────────────┐
-│   FastAPI API  (:8000)      │
-│                             │
-│  routes/cases.py            │  CRUD for veterinary cases
-│  routes/audio.py            │  audio upload → Whisper → Transcription
-│  routes/transcription.py    │  read/edit transcription text
-│  routes/reports.py          │  LangGraph pipeline → Report (blocking + SSE)
-│                             │
-│  services/audio_service.py  │  wraps Whisper in a thread pool
-│  services/llm_service.py    │  wraps BioGPT in a thread pool
-│  services/langgraph_service.py │ 4-step clinical workflow
-│                             │
-│  utils/tracing.py           │  Langfuse observability (best-effort)
-└──────────┬──────────────────┘
+┌─────────────────────────────────────────────┐
+│   FastAPI API  (:8000)                      │
+│                                             │
+│  routes/cases.py          Case CRUD         │
+│  routes/audio.py          upload → transcribe → store
+│  routes/transcription.py  read/edit text    │
+│  routes/reports.py        LLM pipeline + SSE│
+│                                             │
+│  services/audio_service.py  ──httpx──►  Transcription service (:8001)
+│  services/llm_service.py    ──httpx──►  LLM service           (:8002)
+│  services/langgraph_service.py  4-step clinical workflow       │
+│                                             │
+│  utils/tracing.py           Langfuse (best-effort)             │
+└──────────┬──────────────────────────────────┘
            │  asyncpg
            ▼
-┌──────────────────┐     ┌────────────────────────┐
-│  PostgreSQL :5432 │     │  Langfuse :3000         │
-│  (medispeech DB) │     │  (trace dashboard)      │
-└──────────────────┘     └────────────────────────┘
-```
+┌──────────────────┐   ┌───────────────────────┐
+│  PostgreSQL :5432 │   │  Langfuse v2 :3000    │
+│  (medispeech DB) │   │  (trace dashboard)    │
+└──────────────────┘   └───────────────────────┘
 
-The `services/` directory at the repo root contains **standalone microservices** that mirror the in-process services above. They are designed for independent horizontal scaling and expose their own HTTP APIs:
-
-```
 services/
-├── transcription/   Whisper microservice (:8001)
-└── llm/             BioGPT microservice (:8002)
+├── transcription/  Whisper microservice (:8001) — POST /transcribe
+└── llm/            BioGPT microservice  (:8002) — POST /generate
 ```
 
-In the current default deployment the main FastAPI app calls Whisper and BioGPT **in-process** (via thread pools). Extracting them to the standalone microservices is a future scaling step.
+**ML inference is fully decoupled from the API.** The FastAPI backend contains no ML dependencies — it delegates all model calls over HTTP to the two microservices. This means:
+
+- The API container is small and fast to build (no torch/transformers).
+- Each ML service can be scaled, replaced, or updated independently.
+- Tests run in milliseconds because there are no models to load.
 
 ---
 
@@ -66,25 +66,49 @@ In the current default deployment the main FastAPI app calls Whisper and BioGPT 
 
 ### FastAPI backend (`backend/`)
 
-The primary application. All business logic, database access, and ML inference live here.
+The primary application. Handles all business logic, database access, and orchestration.
 
 | File | Responsibility |
 |------|----------------|
 | `app/main.py` | Application factory: creates the FastAPI app, registers CORS, mounts routers, runs DB migrations on startup, flushes Langfuse on shutdown |
-| `app/config.py` | Typed settings via `pydantic-settings`; reads from `.env` or environment |
+| `app/config.py` | Typed settings via `pydantic-settings`; reads from `.env` or environment variables |
 | `app/db.py` | Async SQLAlchemy engine + `AsyncSession` factory + `get_db` FastAPI dependency |
 | `app/routes/cases.py` | CRUD for `Case` records (POST, GET list, GET one, PATCH, DELETE) |
-| `app/routes/audio.py` | Upload audio → Whisper transcription (stored in DB); list/get transcriptions by case |
+| `app/routes/audio.py` | Accept audio upload → call transcription service → store result in DB; list/get transcriptions |
 | `app/routes/transcription.py` | Read and user-edit transcription text (`GET /api/transcriptions/{audio_file_id}`, `PATCH /api/transcriptions/{id}`) |
 | `app/routes/reports.py` | Generate a clinical report (blocking `POST /api/reports` or streaming `POST /api/reports/stream/{transcription_id}`); save, update, finalize |
-| `app/services/audio_service.py` | Wraps `openai-whisper`; loads model lazily; runs CPU-bound transcription in a `ThreadPoolExecutor` so the async event loop is never blocked |
-| `app/services/llm_service.py` | Wraps `microsoft/BioGPT` via HuggingFace Transformers; same thread-pool pattern; also exposes `generate_stream` which yields word-by-word after a full generation pass |
-| `app/services/langgraph_service.py` | The four-step clinical pipeline: extract history → generate findings → generate impressions → generate recommendations. Each step uses study-type-specific prompt templates (x-ray, ultrasound, MRI, CT scan). `stream_report` emits SSE-compatible JSON fragments. |
+| `app/services/audio_service.py` | HTTP client for the transcription microservice; sends multipart audio and returns a `TranscriptionResult` |
+| `app/services/llm_service.py` | HTTP client for the LLM microservice; `generate()` for blocking calls, `generate_stream()` yields words progressively for SSE |
+| `app/services/langgraph_service.py` | Four-step clinical pipeline: extract history → generate findings → generate impressions → generate recommendations. Uses study-type-specific prompt templates (x-ray, ultrasound, MRI, CT scan). `stream_report` emits SSE-compatible JSON fragments. |
 | `app/utils/tracing.py` | Thin wrapper around Langfuse; all calls are swallowed on error so a tracing outage never affects the API |
 | `app/utils/logger.py` | Structured stdout logging using Python's stdlib `logging` |
 | `app/models/` | SQLAlchemy ORM models: `User`, `Case`, `AudioFile`, `Transcription`, `Report` |
 | `app/schemas/` | Pydantic v2 request/response schemas with strict mode |
 | `alembic/` | Database migration scripts managed by Alembic |
+
+### Transcription microservice (`services/transcription/`)
+
+Standalone FastAPI app that owns the Whisper model. The API backend calls it at `POST /transcribe` with a multipart audio file and receives `{text, confidence, model}`. Runs Whisper in a `ThreadPoolExecutor` so the async event loop is never blocked. Warms the model at startup.
+
+| File | Responsibility |
+|------|----------------|
+| `app/main.py` | FastAPI app: `GET /health`, `POST /transcribe` |
+| `app/config.py` | Settings: `host`, `port`, `whisper_model`, Langfuse keys |
+| `app/tracing.py` | Langfuse best-effort tracing (same pattern as backend) |
+| `Dockerfile` | Slim Python 3.12 image with ffmpeg; installs only Whisper deps |
+| `pyproject.toml` | Dependencies: `fastapi`, `uvicorn`, `openai-whisper`, `langfuse` |
+
+### LLM microservice (`services/llm/`)
+
+Standalone FastAPI app that owns the BioGPT model. The API backend calls it at `POST /generate` with a JSON body `{prompt, max_length}` and receives `{text, model}`. Runs generation in a `ThreadPoolExecutor`. Warms the model at startup.
+
+| File | Responsibility |
+|------|----------------|
+| `app/main.py` | FastAPI app: `GET /health`, `POST /generate` |
+| `app/config.py` | Settings: `host`, `port`, `biogpt_model`, Langfuse keys |
+| `app/tracing.py` | Langfuse best-effort tracing |
+| `Dockerfile` | Slim Python 3.12 image; installs only torch/transformers deps |
+| `pyproject.toml` | Dependencies: `fastapi`, `uvicorn`, `transformers`, `torch`, `langfuse` |
 
 ### React frontend (`frontend/`)
 
@@ -103,21 +127,13 @@ The primary application. All business logic, database access, and ML inference l
 
 Vite proxies all `/api/*` requests to `http://localhost:8000` in development, so no CORS configuration is needed locally.
 
-### Transcription microservice (`services/transcription/`)
-
-A standalone FastAPI app that exposes `POST /transcribe`. Accepts a multipart audio file, runs Whisper in a thread pool, and returns `{text, confidence, model}`. Traces via Langfuse. Intended for independent horizontal scaling in production.
-
-### LLM microservice (`services/llm/`)
-
-Configuration (`config.py`) and tracing (`tracing.py`) stubs for a future standalone BioGPT service. The main API currently runs BioGPT in-process.
-
 ### PostgreSQL
 
-All persistent state is stored in a single PostgreSQL 16 database (`medispeech`). The schema is managed by Alembic; initial migration is in `alembic/versions/001_initial_schema.py`.
+All persistent state is stored in a single PostgreSQL 16 database (`medispeech`). The schema is managed by Alembic; the initial migration is in `alembic/versions/001_initial_schema.py`.
 
-### Langfuse
+### Langfuse (v2)
 
-Optional observability dashboard for LLM traces. Every Whisper transcription and every pipeline step emits a Langfuse generation span. The dashboard runs at `http://localhost:3000` in Docker Compose. If Langfuse is unreachable the API continues to function normally.
+Optional observability dashboard for LLM traces. Pinned to `langfuse/langfuse:2` — v2 only requires PostgreSQL. v3 requires ClickHouse + MinIO + Redis and is not used here. The dashboard runs at `http://localhost:3000` in Docker Compose. A separate `langfuse-postgres` container is used so Langfuse data is isolated from application data.
 
 ---
 
@@ -235,6 +251,24 @@ data: {"status": "complete", "clinical_history": "...", "findings": "...", "impr
 
 After the stream closes, call `POST /api/reports/stream/{transcription_id}/save` with the accumulated section texts to persist the report.
 
+### Microservice APIs
+
+These are called internally by the FastAPI backend. They are not exposed to the browser.
+
+**Transcription service** (`http://localhost:8001`)
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| GET | `/health` | — | `{"status": "healthy", "service": "transcription"}` |
+| POST | `/transcribe` | multipart `file` | `{text, confidence, model}` |
+
+**LLM service** (`http://localhost:8002`)
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| GET | `/health` | — | `{"status": "healthy", "service": "llm"}` |
+| POST | `/generate` | `{prompt, max_length}` | `{text, model}` |
+
 ---
 
 ## 5. Running locally (development)
@@ -243,18 +277,22 @@ After the stream closes, call `POST /api/reports/stream/{transcription_id}/save`
 
 - Python 3.12+
 - Node.js 18+
-- Docker & Docker Compose (for PostgreSQL + Langfuse)
+- Docker & Docker Compose
 - [`uv`](https://github.com/astral-sh/uv) package manager
 
-### Step 1 — Start infrastructure
+### Step 1 — Start infrastructure and ML services
 
 ```bash
-docker compose up -d postgres langfuse-postgres langfuse-server
+docker compose up -d postgres langfuse-postgres langfuse-server transcription llm
 ```
 
 This starts:
 - PostgreSQL at `localhost:5432` (`medispeech` database)
 - Langfuse at `http://localhost:3000`
+- Transcription service at `http://localhost:8001` (downloads Whisper `base` model on first start)
+- LLM service at `http://localhost:8002` (downloads `microsoft/BioGPT` on first start)
+
+> The ML services download models from HuggingFace/OpenAI on first boot. Allow a few minutes. Subsequent starts are instant because Docker volumes cache the model weights.
 
 ### Step 2 — Install backend dependencies
 
@@ -263,16 +301,16 @@ cd backend
 uv sync
 ```
 
+The backend has no ML dependencies — install is fast.
+
 ### Step 3 — Configure environment
 
-```bash
-cp .env.example .env   # or create .env manually
-```
-
-Minimum `.env` for local development (defaults already work if you use docker-compose):
+Copy `.env.example` to `.env` (or create it manually). The defaults work with Docker Compose:
 
 ```env
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/medispeech
+TRANSCRIPTION_SERVICE_URL=http://localhost:8001
+LLM_SERVICE_URL=http://localhost:8002
 LANGFUSE_HOST=http://localhost:3000
 LANGFUSE_PUBLIC_KEY=pk-lf-dev
 LANGFUSE_SECRET_KEY=sk-lf-dev
@@ -310,32 +348,39 @@ Frontend: `http://localhost:5173`. Vite proxies `/api/*` to `http://localhost:80
 
 ## 6. Running with Docker Compose
 
-This builds the API from the local `backend/Dockerfile` and starts everything together.
+Builds all services from source and starts the full stack together.
 
 ```bash
 docker compose up --build
 ```
 
-Services:
+Services started:
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| API | `http://localhost:8000` | FastAPI + Whisper + BioGPT |
-| Langfuse | `http://localhost:3000` | Observability dashboard |
-| PostgreSQL | `localhost:5432` | Application database |
+| Container | URL | Description |
+|-----------|-----|-------------|
+| `medispeech-api` | `http://localhost:8000` | FastAPI application |
+| `medispeech-transcription` | `http://localhost:8001` | Whisper transcription service |
+| `medispeech-llm` | `http://localhost:8002` | BioGPT LLM service |
+| `medispeech-langfuse` | `http://localhost:3000` | Observability dashboard |
+| `medispeech-postgres` | `localhost:5432` | Application database |
+| `medispeech-langfuse-postgres` | — | Langfuse-only database (internal) |
 
-The API container volume-mounts `./backend/app` so code changes are picked up immediately (Uvicorn runs with `--reload`).
+The API container volume-mounts `./backend/app` so backend code changes are picked up immediately (Uvicorn runs with `--reload`). ML service code changes require a rebuild (`docker compose up --build transcription` or `llm`).
+
+**Start order:** `postgres` → `langfuse-postgres` + `langfuse-server` → `transcription` + `llm` → `api`
 
 ---
 
 ## 7. Running tests
 
-The test suite uses **SQLite in-memory** for the database so no external infrastructure is required.
+The test suite uses **SQLite in-memory** for the database and mocks all HTTP calls to microservices. No external infrastructure is required.
 
 ```bash
 cd backend
 uv run pytest tests/ -v
 ```
+
+Tests complete in under 2 seconds.
 
 ### Test structure
 
@@ -343,13 +388,13 @@ uv run pytest tests/ -v
 tests/
 ├── conftest.py                   # in-memory SQLite engine + TestClient fixture
 ├── test_audio_pipeline.py        # case CRUD + health check
-└── test_routes/
+├── test_routes/
 │   ├── test_health.py            # health endpoint
-│   ├── test_audio.py             # audio upload (Whisper mocked), transcription listing
+│   ├── test_audio.py             # audio upload (transcription service mocked), listing
 │   ├── test_transcriptions.py    # transcription read + user-edit
 │   └── test_reports.py           # report CRUD, finalize, LLM integration
 └── test_services/
-    ├── test_audio_service.py     # AudioService unit tests (Whisper mocked)
+    ├── test_audio_service.py     # AudioService unit tests (httpx mocked)
     └── test_langgraph_service.py # ClinicalWorkflow unit tests (LLM mocked)
 ```
 
@@ -358,11 +403,12 @@ tests/
 | Layer | In tests |
 |-------|----------|
 | Database | SQLite in-memory (via `aiosqlite`) |
-| Whisper (`audio_service.transcribe`) | `unittest.mock.AsyncMock` — no model loaded |
-| BioGPT (`llm_service.generate` / `generate_stream`) | `monkeypatch` stub — no model loaded |
+| Transcription service (`audio_service.transcribe`) | `unittest.mock.AsyncMock` — no HTTP call |
+| LLM service (`llm_service.generate` / `generate_stream`) | `monkeypatch` stub — no HTTP call |
+| `httpx.AsyncClient` in `AudioService` | Patched with `unittest.mock` — no network |
 | Langfuse | Disabled automatically (connection refused → `LANGFUSE_ENABLED = False`) |
 
-The `test_create_report` test is automatically skipped when the BioGPT model is not present (CI-safe).
+The `test_create_report` test is automatically skipped when the LLM service is unreachable (CI-safe).
 
 ### Running specific subsets
 
@@ -406,11 +452,13 @@ kubectl create secret generic database-url \
 
 The Ingress assumes an Nginx Ingress Controller is installed and exposes the API at the configured hostname.
 
+> The transcription and LLM services do not yet have k8s manifests. Add a `Deployment` + `Service` for each, then set `TRANSCRIPTION_SERVICE_URL` and `LLM_SERVICE_URL` in the API `configmap.yaml`.
+
 ---
 
 ## 9. Environment variables
 
-All variables are read by `app/config.py` (pydantic-settings). They can be set in a `.env` file or as real environment variables.
+### API (`backend/app/config.py`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -420,8 +468,30 @@ All variables are read by `app/config.py` (pydantic-settings). They can be set i
 | `API_TITLE` | `MediSpeech API` | OpenAPI title |
 | `API_VERSION` | `0.1.0` | API version string |
 | `LOG_LEVEL` | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `WHISPER_MODEL_PATH` | `/models/whisper-base` | Path hint (model name resolved by `whisper.load_model("base")`) |
-| `LLM_MODEL_PATH` | `/models/biogpt` | Path hint (HuggingFace resolves `microsoft/BioGPT`) |
+| `TRANSCRIPTION_SERVICE_URL` | `http://localhost:8001` | Base URL of the transcription microservice |
+| `LLM_SERVICE_URL` | `http://localhost:8002` | Base URL of the LLM microservice |
+| `LANGFUSE_HOST` | `http://localhost:3000` | Langfuse server URL |
+| `LANGFUSE_PUBLIC_KEY` | `pk-lf-dev` | Langfuse public key |
+| `LANGFUSE_SECRET_KEY` | `sk-lf-dev` | Langfuse secret key |
+
+### Transcription service (`services/transcription/app/config.py`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8001` | Bind port |
+| `WHISPER_MODEL` | `base` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large`) |
+| `LANGFUSE_HOST` | `http://localhost:3000` | Langfuse server URL |
+| `LANGFUSE_PUBLIC_KEY` | `pk-lf-dev` | Langfuse public key |
+| `LANGFUSE_SECRET_KEY` | `sk-lf-dev` | Langfuse secret key |
+
+### LLM service (`services/llm/app/config.py`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8002` | Bind port |
+| `BIOGPT_MODEL` | `microsoft/BioGPT` | HuggingFace model ID |
 | `LANGFUSE_HOST` | `http://localhost:3000` | Langfuse server URL |
 | `LANGFUSE_PUBLIC_KEY` | `pk-lf-dev` | Langfuse public key |
 | `LANGFUSE_SECRET_KEY` | `sk-lf-dev` | Langfuse secret key |
@@ -430,14 +500,15 @@ All variables are read by `app/config.py` (pydantic-settings). They can be set i
 
 ## 10. Observability (Langfuse)
 
-MediSpeech traces every ML call through Langfuse. Each API request that involves the ML pipeline creates a **trace** with one or more **generation spans**:
+MediSpeech traces every ML call through Langfuse v2. Each request that involves the ML pipeline creates a **trace** with one or more **generation spans**:
 
-| Trace name | Spans | Triggered by |
-|------------|-------|--------------|
-| `transcription` | `whisper-transcription` | `POST /api/audio/{case_id}/upload` |
-| `report-create` | `extract_history`, `generate_findings`, `generate_impressions`, `generate_recommendations` | `POST /api/reports` |
-| `report-generation-stream` | same 4 steps | `POST /api/reports/stream/{transcription_id}` |
+| Trace name | Spans | Where emitted |
+|------------|-------|---------------|
+| `transcription` | `whisper` | Transcription service, on `POST /transcribe` |
+| `report-create` | `extract_history`, `generate_findings`, `generate_impressions`, `generate_recommendations` | API, on `POST /api/reports` |
+| `report-generation-stream` | same 4 steps | API, on `POST /api/reports/stream/{id}` |
+| `llm-generate` | `biogpt` | LLM service, on each `POST /generate` call |
 
-Langfuse records prompt text, generated output, token counts, and wall-clock latency per step. Access the dashboard at `http://localhost:3000` (Docker Compose) and log in with the credentials you configured in `docker-compose.yml`.
+Langfuse records prompt text, generated output, token counts, and wall-clock latency per step. Access the dashboard at `http://localhost:3000`.
 
-If the Langfuse server is unreachable at startup, tracing is silently disabled (`LANGFUSE_ENABLED = False`) and the API operates normally — tracing is always best-effort.
+If the Langfuse server is unreachable at startup, tracing is silently disabled (`LANGFUSE_ENABLED = False`) and the API continues to operate normally — tracing is always best-effort.
