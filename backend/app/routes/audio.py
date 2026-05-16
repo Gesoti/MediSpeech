@@ -53,7 +53,9 @@ async def upload_audio(
         logger.info(f"Processing audio: {file.filename}")
 
         t0 = time.perf_counter()
-        transcription_result = await audio_service.transcribe(audio_bytes)
+        transcription_result = await audio_service.transcribe(
+            audio_bytes, filename=file.filename or "audio.webm"
+        )
         elapsed = time.perf_counter() - t0
 
         if trace is not None:

@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
-    # Model paths
-    whisper_model_path: str = "/models/whisper-base"
-    llm_model_path: str = "/models/biogpt"
+    # Microservice URLs
+    transcription_service_url: str = "http://localhost:8001"
+    llm_service_url: str = "http://localhost:8002"
 
     # Langfuse observability
     langfuse_host: str = "http://localhost:3000"

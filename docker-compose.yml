@@ -16,9 +16,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # Langfuse observability stack
+  # Langfuse v2 — only needs PostgreSQL (v3 requires ClickHouse + MinIO + Redis)
   langfuse-server:
-    image: langfuse/langfuse:latest
+    image: langfuse/langfuse:2
     container_name: medispeech-langfuse
     depends_on:
       langfuse-postgres:
@@ -49,6 +49,42 @@ services:
       timeout: 5s
       retries: 5
 
+  transcription:
+    build:
+      context: ./services/transcription
+    container_name: medispeech-transcription
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8001"
+      WHISPER_MODEL: base
+      LANGFUSE_HOST: http://langfuse-server:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
+    ports:
+      - "8001:8001"
+    depends_on:
+      langfuse-server:
+        condition: service_started
+    restart: unless-stopped
+
+  llm:
+    build:
+      context: ./services/llm
+    container_name: medispeech-llm
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8002"
+      BIOGPT_MODEL: microsoft/BioGPT
+      LANGFUSE_HOST: http://langfuse-server:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
+    ports:
+      - "8002:8002"
+    depends_on:
+      langfuse-server:
+        condition: service_started
+    restart: unless-stopped
+
   api:
     build:
       context: ./backend
@@ -57,8 +93,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/medispeech
       API_HOST: 0.0.0.0
-      API_PORT: 8000
+      API_PORT: "8000"
       LOG_LEVEL: INFO
+      TRANSCRIPTION_SERVICE_URL: http://transcription:8001
+      LLM_SERVICE_URL: http://llm:8002
       LANGFUSE_HOST: http://langfuse-server:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
@@ -67,6 +105,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      transcription:
+        condition: service_started
+      llm:
+        condition: service_started
     volumes:
       - ./backend/app:/app/app
     command: /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

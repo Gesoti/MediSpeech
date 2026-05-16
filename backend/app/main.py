@@ -22,15 +22,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
 
-    # Initialize LLM and LangGraph services
-    try:
-        from app.services.llm_service import llm_service
-        from app.services.langgraph_service import clinical_workflow
-
-        logger.info("LLM and LangGraph services ready")
-    except Exception as e:
-        logger.warning(f"LLM services initialization deferred: {str(e)}")
-
     yield
 
     # Shutdown
