@@ -16,15 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Copy project files
+# Install dependencies using uv
 COPY pyproject.toml pyproject.toml
+COPY uv.lock uv.lock
+RUN uv sync --frozen
+
+# Copy project files
 COPY --chown=appuser:appuser app app
 COPY alembic alembic
 COPY alembic.ini alembic.ini
-
-# Install dependencies using uv
-COPY uv.lock uv.lock
-RUN uv sync --frozen
 
 # Change ownership of the app directory to the non-root user
 USER appuser

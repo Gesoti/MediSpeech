@@ -29,7 +29,7 @@ def _load_model() -> None:
     _model = AutoModelForCausalLM.from_pretrained(settings.biogpt_model).to(_device)
 
 
-def _generate_sync(prompt: str, max_length: int) -> str:
+def _generate_sync(prompt: str) -> str:
     _load_model()
     import torch
 
@@ -40,7 +40,6 @@ def _generate_sync(prompt: str, max_length: int) -> str:
     with torch.no_grad():
         outputs = _model.generate(
             inputs,
-            max_length=max_length,
             num_beams=3,
             early_stopping=True,
             temperature=0.7,
@@ -83,7 +82,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     t0 = time.perf_counter()
 
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(_executor, _generate_sync, req.prompt, req.max_length)
+    text = await loop.run_in_executor(_executor, _generate_sync, req.prompt)
 
     elapsed = time.perf_counter() - t0
     if trace is not None:

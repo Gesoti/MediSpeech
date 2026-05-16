@@ -15,7 +15,7 @@ from app.models.transcription import Transcription
 from app.schemas.report import ReportCreate, ReportResponse, ReportUpdate, StreamedReportSave
 from app.services.langgraph_service import clinical_workflow
 from app.utils.logger import get_logger
-from app.utils.tracing import create_trace
+from app.utils.tracing import create_trace, flush as flush_langfuse
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 logger = get_logger(__name__)
@@ -100,7 +100,7 @@ async def create_report(
         raise HTTPException(status_code=500, detail="Report generation failed") from e
 
 
-@router.post("/stream/{transcription_id}")
+@router.get("/stream/{transcription_id}")
 async def stream_report(
     transcription_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -121,17 +121,11 @@ async def stream_report(
                 transcription.raw_text, study_type=case.study_type
             ):
                 yield f"data: {payload}\n\n"
-
-            # Persist the completed report after streaming
-            try:
-                # Re-run non-streaming to get final values for DB persistence
-                # (stream_report already returned the complete text in the final event)
-                pass
-            except Exception:
-                pass
         except Exception as exc:
             logger.error(f"SSE stream error: {exc}")
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            flush_langfuse()
 
     return StreamingResponse(
         event_generator(),

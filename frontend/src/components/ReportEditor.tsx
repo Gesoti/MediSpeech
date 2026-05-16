@@ -9,6 +9,7 @@ interface ReportEditorProps {
 }
 
 const SECTIONS: { key: keyof ReportUpdate; label: string }[] = [
+  { key: "clinical_history", label: "Clinical History" },
   { key: "findings", label: "Radiological Findings" },
   { key: "impressions", label: "Clinical Impression" },
   { key: "recommendations", label: "Recommendations" },
@@ -17,6 +18,7 @@ const SECTIONS: { key: keyof ReportUpdate; label: string }[] = [
 export function ReportEditor({ report, onUpdate }: ReportEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReportUpdate>({
+    clinical_history: report.clinical_history,
     findings: report.findings,
     impressions: report.impressions,
     recommendations: report.recommendations,
@@ -99,13 +101,6 @@ export function ReportEditor({ report, onUpdate }: ReportEditorProps) {
           </div>
         )}
       </div>
-
-      {report.clinical_history && (
-        <div className="px-5 py-4 border-b border-slate-50 bg-slate-50">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Clinical History</p>
-          <p className="text-sm text-slate-700 whitespace-pre-wrap">{report.clinical_history}</p>
-        </div>
-      )}
 
       <div className="divide-y divide-slate-50">
         {SECTIONS.map(({ key, label }) => (
