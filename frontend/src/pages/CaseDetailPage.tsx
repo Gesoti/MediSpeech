@@ -10,9 +10,12 @@ import {
   PawPrint,
   Wand2,
   Zap,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import type { Case, Transcription, Report } from "@/types";
-import { casesApi, audioApi, reportsApi } from "@/api/client";
+import { casesApi, audioApi, reportsApi, transcriptionsApi } from "@/api/client";
 import { AudioUploader } from "@/components/AudioUploader";
 import { ReportEditor } from "@/components/ReportEditor";
 import { StreamingReportViewer } from "@/components/StreamingReportViewer";
@@ -30,6 +33,9 @@ export function CaseDetailPage() {
   const [reportMode, setReportMode] = useState<ReportMode>("none");
   const [streamingTxId, setStreamingTxId] = useState<string | null>(null);
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [editingTxId, setEditingTxId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [savingTx, setSavingTx] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -70,6 +76,24 @@ export function CaseDetailPage() {
     setStreamingTxId(transcriptionId);
     setReportMode("streaming");
     setError(null);
+  };
+
+  const startEditing = (t: Transcription) => {
+    setEditingTxId(t.id);
+    setEditDraft(t.raw_text);
+  };
+
+  const saveEdit = async (id: string) => {
+    setSavingTx(true);
+    try {
+      const updated = await transcriptionsApi.update(id, editDraft);
+      setTranscriptions((prev) => prev.map((t) => (t.id === id ? updated : t)));
+      setEditingTxId(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save transcription");
+    } finally {
+      setSavingTx(false);
+    }
   };
 
   /** Blocking fallback (kept for reliability) */
@@ -214,7 +238,49 @@ export function CaseDetailPage() {
                   </div>
                   {expandedTx === t.id && (
                     <div className="px-4 py-3 bg-slate-50 border-t border-slate-200">
-                      <p className="text-sm text-slate-700 whitespace-pre-wrap">{t.raw_text}</p>
+                      {editingTxId === t.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            className="w-full text-sm text-slate-700 bg-white border border-primary-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-400 resize-y min-h-[80px]"
+                            value={editDraft}
+                            onChange={(e) => setEditDraft(e.target.value)}
+                            autoFocus
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => void saveEdit(t.id)}
+                              disabled={savingTx}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors"
+                            >
+                              {savingTx ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <Check size={11} />
+                              )}
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingTxId(null)}
+                              disabled={savingTx}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-slate-200 rounded-lg disabled:opacity-50 transition-colors"
+                            >
+                              <X size={11} />
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="group relative">
+                          <p className="text-sm text-slate-700 whitespace-pre-wrap pr-8">{t.raw_text}</p>
+                          <button
+                            onClick={() => startEditing(t)}
+                            className="absolute top-0 right-0 p-1 rounded text-slate-300 hover:text-slate-600 hover:bg-slate-200 opacity-0 group-hover:opacity-100 transition-all"
+                            title="Edit transcription"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
