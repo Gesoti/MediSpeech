@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     transcription_service_url: str = "http://localhost:8001"
     llm_service_url: str = "http://localhost:8002"
 
+    # Audio storage
+    audio_storage_path: str = "/audio"
+
+    # CORS
+    allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
     # Langfuse observability
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = "pk-lf-dev"

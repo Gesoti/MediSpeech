@@ -1,4 +1,6 @@
 """Audio file upload routes."""
+import contextlib
+import os
 import time
 from typing import Any
 from uuid import UUID
@@ -7,6 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db import get_db
 from app.models.audio import AudioFile
 from app.models.case import Case
@@ -42,9 +45,17 @@ async def upload_audio(
     try:
         audio_bytes = await file.read()
 
+        # Persist audio bytes to the mounted volume so they survive restarts
+        audio_dir = os.path.join(settings.audio_storage_path, str(case_id))
+        os.makedirs(audio_dir, exist_ok=True)
+        filename = file.filename or "audio.webm"
+        audio_path = os.path.join(audio_dir, filename)
+        with open(audio_path, "wb") as fh:
+            fh.write(audio_bytes)
+
         audio_file = AudioFile(
             case_id=case_id,
-            raw_audio_url=f"uploads/{case_id}/{file.filename}",
+            raw_audio_url=f"{case_id}/{filename}",
             duration_seconds=0.0,
         )
         db.add(audio_file)
@@ -59,7 +70,7 @@ async def upload_audio(
         elapsed = time.perf_counter() - t0
 
         if trace is not None:
-            try:
+            with contextlib.suppress(Exception):
                 trace.generation(
                     name="whisper-transcription",
                     model="whisper-base",
@@ -68,8 +79,6 @@ async def upload_audio(
                     usage={"total_tokens": len(transcription_result["text"].split())},
                     metadata={"elapsed_seconds": round(elapsed, 2)},
                 ).end()
-            except Exception:
-                pass
 
         transcription = Transcription(
             audio_file_id=audio_file.id,
@@ -81,10 +90,8 @@ async def upload_audio(
         await db.commit()
 
         if trace is not None:
-            try:
+            with contextlib.suppress(Exception):
                 trace.update(output={"transcription_id": str(transcription.id)})
-            except Exception:
-                pass
 
         logger.info(f"Audio processed successfully: {audio_file.id}")
 
@@ -100,7 +107,7 @@ async def upload_audio(
     except Exception as e:
         await db.rollback()
         logger.error(f"Audio upload error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Audio processing failed")
+        raise HTTPException(status_code=500, detail="Audio processing failed") from None
 
 
 @router.get("/{case_id}/transcriptions")

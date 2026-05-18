@@ -1,5 +1,6 @@
 """Test configuration and fixtures."""
 import asyncio
+import tempfile
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -10,6 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import Base, get_db
 from app.routes import audio, cases, reports, transcription
+
+
+@pytest.fixture(autouse=True)
+def patch_audio_storage(tmp_path, monkeypatch):
+    """Redirect audio storage to a temp directory so tests don't need /audio."""
+    monkeypatch.setattr(settings, "audio_storage_path", str(tmp_path))
 
 
 @pytest.fixture(scope="function")
