@@ -1,5 +1,4 @@
 """Medical LLM service — delegates to the LLM microservice over HTTP."""
-import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
@@ -28,11 +27,21 @@ class MedicalLLMService:
     async def generate_stream(
         self, prompt: str, max_length: int = 512
     ) -> AsyncIterator[str]:
-        """Fetch the full response then stream it word-by-word for SSE compatibility."""
-        full_text = await self.generate(prompt, max_length)
-        for word in full_text.split():
-            yield word + " "
-            await asyncio.sleep(0)
+        """Stream tokens from the LLM service via SSE."""
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream(
+                "POST",
+                f"{settings.llm_service_url}/generate/stream",
+                json={"prompt": prompt, "max_length": max_length},
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        token = line[6:]
+                        if token == "[DONE]":
+                            return
+                        if token:
+                            yield token
 
 
 llm_service = MedicalLLMService()

@@ -7,9 +7,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from functools import partial
+from threading import Thread
 from typing import Any, AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -128,3 +130,42 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             pass
 
     return GenerateResponse(text=text, model=settings.biogpt_model)
+
+
+@app.post("/generate/stream")
+async def generate_stream(req: GenerateRequest) -> StreamingResponse:
+    """Stream BioGPT generation token-by-token via SSE."""
+    if _generator is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    from transformers import TextIteratorStreamer
+
+    streamer = TextIteratorStreamer(
+        _generator.tokenizer,  # type: ignore[attr-defined]
+        skip_prompt=True,
+        skip_special_tokens=True,
+    )
+
+    generation_kwargs = dict(
+        text_inputs=req.prompt,
+        max_new_tokens=req.max_length,
+        num_beams=1,  # beams > 1 incompatible with streaming
+        do_sample=True,
+        temperature=0.7,
+        repetition_penalty=1.3,
+        no_repeat_ngram_size=3,
+        streamer=streamer,
+    )
+
+    thread = Thread(target=_generator, kwargs=generation_kwargs)  # type: ignore[arg-type]
+
+    async def _event_stream() -> AsyncGenerator[str, None]:
+        thread.start()
+        loop = asyncio.get_running_loop()
+        for token in streamer:
+            if token:
+                yield f"data: {token}\n\n"
+            await loop.run_in_executor(None, lambda: None)  # yield control to event loop
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
