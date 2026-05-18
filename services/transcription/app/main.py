@@ -38,7 +38,7 @@ def _transcribe_sync(audio_bytes: bytes) -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, _load_model)
     yield
     flush()
@@ -70,7 +70,7 @@ async def transcribe(file: UploadFile = File(...)) -> TranscriptionResponse:
     trace = create_trace("transcription", input={"filename": file.filename, "bytes": len(audio_bytes)})
     t0 = time.perf_counter()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(_executor, _transcribe_sync, audio_bytes)
 
     elapsed = time.perf_counter() - t0
@@ -113,7 +113,7 @@ async def transcribe_stream(file: UploadFile = File(...)) -> StreamingResponse:
     """
     audio_bytes = await file.read()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(_executor, _transcribe_sync, audio_bytes)
 
     async def _event_stream() -> AsyncGenerator[str, None]:

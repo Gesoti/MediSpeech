@@ -17,7 +17,8 @@ from app.tracing import create_trace, flush, tracing_status
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="biogpt")
 _generator: Any = None
-_device: str = "cpu"
+_device: str = "cpu"  # overwritten to "cuda" if available during _load_model
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
 def _load_model() -> None:
@@ -39,20 +40,21 @@ def _load_model() -> None:
 
 
 def _remove_repetition(text: str) -> str:
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    seen: dict[str, None] = {}
+    sentences = _SENTENCE_SPLIT.split(text.strip())
+    seen: set[str] = set()
     unique: list[str] = []
     for s in sentences:
         key = s.lower().strip()
         if key and key not in seen:
-            seen[key] = None
+            seen.add(key)
             unique.append(s)
     return " ".join(unique)
 
 
 def _generate_sync(prompt: str, max_new_tokens: int = 256) -> str:
     _load_model()
-    assert _generator is not None
+    if _generator is None:
+        raise RuntimeError("BioGPT model failed to load; cannot generate text")
 
     results: list[dict[str, Any]] = _generator(
         prompt,
@@ -72,7 +74,7 @@ def _generate_sync(prompt: str, max_new_tokens: int = 256) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, _load_model)
     yield
     flush()
@@ -106,7 +108,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     trace = create_trace("llm-generate", input={"prompt_length": len(req.prompt)})
     t0 = time.perf_counter()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     fn = partial(_generate_sync, req.prompt, req.max_length)
     text = await loop.run_in_executor(_executor, fn)
 

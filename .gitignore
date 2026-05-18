@@ -66,3 +66,7 @@ build/
 # Environment
 .env.local
 .env.*.local
+
+# Claude Code — private config, never commit
+.claude/
+CLAUDE.md
