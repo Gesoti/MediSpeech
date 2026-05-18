@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-COPY pyproject.toml pyproject.toml
-COPY app app
+COPY transcription/pyproject.toml pyproject.toml
+COPY transcription/app app
+COPY shared shared
 
 # Install only this service's slim deps (no torch/transformers for main API)
 RUN uv sync

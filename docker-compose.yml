@@ -51,7 +51,8 @@ services:
 
   transcription:
     build:
-      context: ./services/transcription
+      context: ./services
+      dockerfile: transcription/Dockerfile
     container_name: medispeech-transcription
     environment:
       HOST: 0.0.0.0
@@ -69,7 +70,8 @@ services:
 
   llm:
     build:
-      context: ./services/llm
+      context: ./services
+      dockerfile: llm/Dockerfile
     container_name: medispeech-llm
     environment:
       HOST: 0.0.0.0
@@ -111,12 +113,8 @@ services:
         condition: service_started
     volumes:
       - ./backend/app:/app/app
-      - audio_data:/audio
-    command: >
-      sh -c "/app/.venv/bin/alembic upgrade head &&
-             /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   postgres_data:
   langfuse_postgres_data:
-  audio_data:

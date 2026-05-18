@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import settings
-from app.tracing import create_trace, flush, tracing_status
+from app.tracing import create_trace, flush, init, tracing_status
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="whisper")
 _model: Any = None
@@ -26,11 +26,11 @@ def _validate_audio(data: bytes) -> None:
     header = data[:12]
     if (
         header[:4] == b"\x1a\x45\xdf\xa3"  # WebM / MKV
-        or header[:4] == b"RIFF"             # WAV
-        or header[:3] == b"ID3"              # MP3 with ID3 tag
+        or header[:4] == b"RIFF"  # WAV
+        or header[:3] == b"ID3"  # MP3 with ID3 tag
         or header[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")  # raw MP3 frames
-        or header[:4] == b"OggS"             # OGG
-        or header[4:8] == b"ftyp"            # M4A / AAC / MP4 container
+        or header[:4] == b"OggS"  # OGG
+        or header[4:8] == b"ftyp"  # M4A / AAC / MP4 container
     ):
         return
     raise HTTPException(
@@ -56,6 +56,7 @@ def _transcribe_sync(audio_bytes: bytes) -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    init(settings.langfuse_host, settings.langfuse_public_key, settings.langfuse_secret_key)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, _load_model)
     yield

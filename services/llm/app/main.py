@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app.config import settings
-from app.tracing import create_trace, flush, tracing_status
+from app.tracing import create_trace, flush, init, tracing_status
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="biogpt")
 _generator: Any = None
@@ -74,6 +74,7 @@ def _generate_sync(prompt: str, max_new_tokens: int = 256) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    init(settings.langfuse_host, settings.langfuse_public_key, settings.langfuse_secret_key)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, _load_model)
     yield
