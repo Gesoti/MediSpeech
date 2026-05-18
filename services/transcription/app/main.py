@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
 import whisper
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -19,6 +19,24 @@ from app.tracing import create_trace, flush, tracing_status
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="whisper")
 _model: Any = None
+
+
+def _validate_audio(data: bytes) -> None:
+    """Reject files that don't match known audio magic bytes before hitting ffmpeg."""
+    header = data[:12]
+    if (
+        header[:4] == b"\x1a\x45\xdf\xa3"  # WebM / MKV
+        or header[:4] == b"RIFF"             # WAV
+        or header[:3] == b"ID3"              # MP3 with ID3 tag
+        or header[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")  # raw MP3 frames
+        or header[:4] == b"OggS"             # OGG
+        or header[4:8] == b"ftyp"            # M4A / AAC / MP4 container
+    ):
+        return
+    raise HTTPException(
+        status_code=422,
+        detail="Unsupported audio format. Accepted: webm, wav, mp3, ogg, m4a",
+    )
 
 
 def _load_model() -> Any:
@@ -66,6 +84,7 @@ async def health_tracing() -> dict[str, Any]:
 @app.post("/transcribe", response_model=TranscriptionResponse)
 async def transcribe(file: UploadFile = File(...)) -> TranscriptionResponse:
     audio_bytes = await file.read()
+    _validate_audio(audio_bytes)
 
     trace = create_trace("transcription", input={"filename": file.filename, "bytes": len(audio_bytes)})
     t0 = time.perf_counter()
@@ -112,6 +131,7 @@ async def transcribe_stream(file: UploadFile = File(...)) -> StreamingResponse:
     A final "data: [DONE]" event signals completion.
     """
     audio_bytes = await file.read()
+    _validate_audio(audio_bytes)
 
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(_executor, _transcribe_sync, audio_bytes)
