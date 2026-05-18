@@ -1,12 +1,12 @@
 """FastAPI application factory."""
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.db import Base, engine
+from app.db import engine
 from app.routes import audio, cases, reports, transcription
 from app.utils.logger import get_logger
 
@@ -16,11 +16,8 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for startup and shutdown."""
-    # Startup
+    # Startup — schema is managed by Alembic migrations, not create_all
     logger.info("Starting MediSpeech API")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created")
 
     yield
 
@@ -40,11 +37,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Add CORS middleware
+    # Add CORS middleware — allow_credentials must be False when origins are not "*"
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=settings.allowed_origins,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

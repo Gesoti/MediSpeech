@@ -112,7 +112,9 @@ services:
     volumes:
       - ./backend/app:/app/app
       - audio_data:/audio
-    command: /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >
+      sh -c "/app/.venv/bin/alembic upgrade head &&
+             /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
 volumes:
   postgres_data:
