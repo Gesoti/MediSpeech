@@ -60,6 +60,65 @@ export const audioApi = {
     }
     return res.json() as Promise<Transcription>;
   },
+
+  /** Stream transcription segments as they are decoded.
+   *  Calls onSegment for each arriving text chunk.
+   *  Resolves with the final Transcription once the stream is complete. */
+  uploadStream: async (
+    caseId: string,
+    file: File,
+    onSegment: (text: string) => void,
+  ): Promise<Transcription> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${BASE}/audio/${caseId}/upload/stream`, {
+      method: "POST",
+      body: form,
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(detail.detail ?? `HTTP ${res.status}`);
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6);
+        const event = JSON.parse(payload) as {
+          type: "segment" | "done" | "error";
+          text?: string;
+          transcription_id?: string;
+          audio_file_id?: string;
+          confidence?: number | null;
+          model?: string;
+          raw_text?: string;
+          detail?: string;
+        };
+        if (event.type === "error") throw new Error(event.detail ?? "Transcription failed");
+        if (event.type === "segment" && event.text) onSegment(event.text);
+        if (event.type === "done") {
+          return {
+            id: event.transcription_id!,
+            audio_file_id: event.audio_file_id!,
+            raw_text: event.raw_text!,
+            confidence: event.confidence ?? null,
+            model_used: event.model!,
+            created_at: new Date().toISOString(),
+          };
+        }
+      }
+    }
+    throw new Error("Stream ended without a done event");
+  },
   listTranscriptions: (caseId: string) =>
     request<Transcription[]>(`/audio/${caseId}/transcriptions`),
   getTranscription: (transcriptionId: string) =>

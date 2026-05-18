@@ -1,11 +1,14 @@
 """Audio file upload routes."""
 import contextlib
+import json
 import os
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,6 +111,73 @@ async def upload_audio(
         await db.rollback()
         logger.error(f"Audio upload error: {str(e)}")
         raise HTTPException(status_code=500, detail="Audio processing failed") from None
+
+
+@router.post("/{case_id}/upload/stream")
+async def upload_audio_stream(
+    case_id: UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Upload audio and stream transcription segments as SSE.
+
+    Events emitted:
+      {"type": "segment", "start": float, "end": float, "text": str}
+      {"type": "done", "transcription_id": str, "audio_file_id": str,
+       "confidence": float | null, "model": str, "raw_text": str}
+      {"type": "error", "detail": str}
+    """
+    case_result = await db.execute(select(Case).filter(Case.id == case_id))
+    if not case_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    audio_bytes = await file.read()
+
+    # Persist audio file to the mounted volume
+    audio_dir = os.path.join(settings.audio_storage_path, str(case_id))
+    os.makedirs(audio_dir, exist_ok=True)
+    filename = file.filename or "audio.webm"
+    with open(os.path.join(audio_dir, filename), "wb") as fh:
+        fh.write(audio_bytes)
+
+    audio_file = AudioFile(
+        case_id=case_id,
+        raw_audio_url=f"{case_id}/{filename}",
+        duration_seconds=0.0,
+    )
+    db.add(audio_file)
+    await db.flush()
+    audio_file_id = audio_file.id
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        segments: list[dict[str, Any]] = []
+        meta: dict[str, Any] = {"model": "faster-whisper", "confidence": None}
+        try:
+            async for event in audio_service.transcribe_stream(audio_bytes, filename):
+                if event.get("type") == "meta":
+                    meta = event
+                else:
+                    segments.append(event)
+                    yield f"data: {json.dumps({'type': 'segment', 'start': event['start'], 'end': event['end'], 'text': event['text']})}\n\n"
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Stream transcription error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Transcription failed'})}\n\n"
+            return
+
+        raw_text = " ".join(s["text"] for s in segments)
+        transcription = Transcription(
+            audio_file_id=audio_file_id,
+            raw_text=raw_text,
+            confidence=meta.get("confidence"),
+            model_used=meta.get("model", "faster-whisper"),
+        )
+        db.add(transcription)
+        await db.commit()
+
+        yield f"data: {json.dumps({'type': 'done', 'transcription_id': str(transcription.id), 'audio_file_id': str(audio_file_id), 'confidence': meta.get('confidence'), 'model': meta.get('model', 'faster-whisper'), 'raw_text': raw_text})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/{case_id}/transcriptions")

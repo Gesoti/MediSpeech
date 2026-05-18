@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { Upload, Mic, Square, Pause, Play, Loader2, Check, Edit2 } from "lucide-react";
+import { Upload, Mic, Square, Pause, Play, Loader2, Check, Edit2, Radio } from "lucide-react";
 import type { Transcription } from "@/types";
 import { audioApi, transcriptionsApi } from "@/api/client";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -17,6 +17,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   const { error, setError, clearError } = useApiError();
   const [dragOver, setDragOver] = useState(false);
   const [editableText, setEditableText] = useState("");
+  const [streamingText, setStreamingText] = useState("");
   const [pendingTranscription, setPendingTranscription] = useState<Transcription | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
 
@@ -27,10 +28,17 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   const uploadAndAppend = useCallback(
     async (file: File, existingText: string) => {
       setRecordState("uploading");
+      setStreamingText("");
       clearError();
       try {
-        const result = await audioApi.upload(caseId, file);
-        // Combine existing (edited) text with the new transcription segment
+        let accumulated = "";
+        const result = await audioApi.uploadStream(caseId, file, (segmentText) => {
+          accumulated = accumulated
+            ? `${accumulated} ${segmentText}`
+            : segmentText;
+          setStreamingText(accumulated);
+        });
+
         const combined = existingText
           ? `${existingText.trimEnd()} ${result.raw_text.trimStart()}`
           : result.raw_text;
@@ -38,9 +46,11 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
         const merged: Transcription = { ...result, raw_text: combined };
         setEditableText(combined);
         setPendingTranscription(merged);
+        setStreamingText("");
         setRecordState("editing");
       } catch (e) {
         setError(e);
+        setStreamingText("");
         setRecordState(existingText ? "editing" : "idle");
       }
     },
@@ -134,9 +144,24 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
             } ${isUploading ? "pointer-events-none opacity-60" : ""}`}
           >
             {isUploading ? (
-              <div className="flex flex-col items-center gap-2 text-slate-500">
-                <Loader2 size={24} className="animate-spin" />
-                <span className="text-sm">Transcribing audio…</span>
+              <div className="flex flex-col items-start gap-2 w-full text-left">
+                <div className="flex items-center gap-2 text-slate-500">
+                  <Radio size={14} className="animate-pulse text-primary-500" />
+                  <span className="text-xs font-medium text-primary-600 uppercase tracking-wide">
+                    Transcribing…
+                  </span>
+                </div>
+                {streamingText ? (
+                  <p className="text-sm text-slate-700 leading-relaxed w-full">
+                    {streamingText}
+                    <span className="inline-block w-0.5 h-4 ml-0.5 bg-primary-500 align-text-bottom animate-pulse" />
+                  </p>
+                ) : (
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Loader2 size={14} className="animate-spin" />
+                    <span className="text-xs">Waiting for first segment…</span>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex flex-col items-center gap-2 text-slate-500">

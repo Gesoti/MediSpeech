@@ -178,10 +178,12 @@ async def transcribe_stream(file: UploadFile = File(...)) -> StreamingResponse:
     loop.run_in_executor(_executor, _stream_segments_worker, audio_bytes, queue, loop)
 
     async def _event_stream() -> AsyncGenerator[str, None]:
+        collected: list[Segment] = []
         while True:
             seg = await queue.get()
             if seg is None:
                 break
+            collected.append(seg)
             payload = json.dumps(
                 {
                     "start": round(seg.start, 3),
@@ -190,6 +192,14 @@ async def transcribe_stream(file: UploadFile = File(...)) -> StreamingResponse:
                 }
             )
             yield f"data: {payload}\n\n"
+
+        # Emit metadata so the backend can persist confidence + model without
+        # a separate blocking call
+        confidence: float | None = None
+        if collected:
+            avg = sum(s.avg_logprob for s in collected) / len(collected)
+            confidence = round(max(0.0, 1.0 + avg), 4)
+        yield f"data: {json.dumps({'type': 'meta', 'model': f'faster-whisper-{settings.whisper_model}', 'confidence': confidence})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_event_stream(), media_type="text/event-stream")
