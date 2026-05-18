@@ -11,13 +11,19 @@ import type {
 } from "@/types";
 
 const BASE = "/api";
+const TOKEN_KEY = "ms_token";
+
+function authHeader(): Record<string, string> {
+  const token = localStorage.getItem(TOKEN_KEY);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: { "Content-Type": "application/json", ...authHeader(), ...options?.headers },
     ...options,
   });
   if (!res.ok) {
@@ -26,6 +32,20 @@ async function request<T>(
   }
   return res.json() as Promise<T>;
 }
+
+// Auth
+export const authApi = {
+  login: (email: string, password: string) =>
+    request<{ access_token: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  register: (name: string, email: string, password: string) =>
+    request<{ access_token: string }>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    }),
+};
 
 // Cases
 export const casesApi = {
@@ -53,6 +73,7 @@ export const audioApi = {
     const res = await fetch(`${BASE}/audio/${caseId}/upload`, {
       method: "POST",
       body: form,
+      headers: authHeader(),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({ detail: res.statusText }));
@@ -74,6 +95,7 @@ export const audioApi = {
     const res = await fetch(`${BASE}/audio/${caseId}/upload/stream`, {
       method: "POST",
       body: form,
+      headers: authHeader(),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({ detail: res.statusText }));
