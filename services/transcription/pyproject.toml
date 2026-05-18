@@ -12,7 +12,7 @@ dependencies = [
     "uvicorn[standard]>=0.24.0",
     "python-multipart>=0.0.6",
     "pydantic-settings>=2.1.0",
-    "openai-whisper>=20231117",
+    "faster-whisper>=1.0.0",
     "langfuse>=2.0.0",
 ]
 
