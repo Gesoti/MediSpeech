@@ -1,6 +1,7 @@
 """Clinical reasoning workflow — async pipeline with Langfuse tracing."""
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -219,22 +220,18 @@ class ClinicalWorkflow:
         t0 = time.perf_counter()
         span = None
         if trace is not None:
-            try:
+            with contextlib.suppress(Exception):
                 span = trace.generation(
                     name=step_name,
                     input=prompt,
                     model="biogpt",
                 )
-            except Exception:
-                pass
 
         result = await llm_service.generate(prompt, max_length)
 
         if span is not None:
-            try:
+            with contextlib.suppress(Exception):
                 span.end(output=result, usage={"completion_tokens": len(result.split())})
-            except Exception:
-                pass
 
         elapsed = time.perf_counter() - t0
         logger.info(f"{step_name}: {len(result)} chars in {elapsed:.2f}s")
@@ -290,10 +287,8 @@ class ClinicalWorkflow:
             )
 
             if trace is not None:
-                try:
+                with contextlib.suppress(Exception):
                     trace.update(output={"status": "completed"})
-                except Exception:
-                    pass
 
             return {
                 "clinical_history": clinical_history,
@@ -303,10 +298,8 @@ class ClinicalWorkflow:
             }
         except Exception as exc:
             if trace is not None:
-                try:
+                with contextlib.suppress(Exception):
                     trace.update(level="ERROR", status_message=str(exc))
-                except Exception:
-                    pass
             logger.error(f"Workflow error: {exc}")
             raise
 
@@ -324,15 +317,6 @@ class ClinicalWorkflow:
             input={"study_type": study_type, "transcription_length": len(transcription)},
             **({"id": trace_id} if trace_id else {}),
         )
-
-        sections: list[tuple[str, dict[str, str], str, int]] = [
-            (
-                "clinical_history",
-                _HISTORY_PROMPTS,
-                "extract_history",
-                256,
-            ),
-        ]
 
         accumulated: dict[str, str] = {}
 
@@ -389,10 +373,8 @@ class ClinicalWorkflow:
         yield json.dumps({"status": "complete", **accumulated})
 
         if trace is not None:
-            try:
+            with contextlib.suppress(Exception):
                 trace.update(output={"status": "streamed"})
-            except Exception:
-                pass
 
 
 clinical_workflow = ClinicalWorkflow()

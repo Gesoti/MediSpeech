@@ -1,0 +1,7 @@
+# Tests that run quickly (no external services, no HTTP calls to microservices).
+# The full suite (including audio pipeline integration tests) runs in CI.
+tests/test_routes/test_health.py
+tests/test_routes/test_audio.py
+tests/test_routes/test_reports.py
+tests/test_routes/test_transcriptions.py
+tests/test_services/

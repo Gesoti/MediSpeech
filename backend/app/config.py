@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Audio storage
     audio_storage_path: str = "/audio"
 
+    # JWT authentication
+    jwt_secret: str = "dev-secret-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24  # 24 hours
+
     # CORS
     allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 

@@ -1,4 +1,5 @@
 """Report routes."""
+import contextlib
 import json
 from uuid import UUID
 
@@ -15,7 +16,8 @@ from app.models.transcription import Transcription
 from app.schemas.report import ReportCreate, ReportResponse, ReportUpdate, StreamedReportSave
 from app.services.langgraph_service import clinical_workflow
 from app.utils.logger import get_logger
-from app.utils.tracing import create_trace, flush as flush_langfuse
+from app.utils.tracing import create_trace
+from app.utils.tracing import flush as flush_langfuse
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 logger = get_logger(__name__)
@@ -84,10 +86,8 @@ async def create_report(
         await db.refresh(report)
 
         if trace is not None:
-            try:
+            with contextlib.suppress(Exception):
                 trace.update(output={"report_id": str(report.id)})
-            except Exception:
-                pass
 
         logger.info(f"Report created: {report.id}")
         return ReportResponse.model_validate(report)

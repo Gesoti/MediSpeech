@@ -24,6 +24,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.25.2",
     "langfuse>=2.0.0",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
 ]
 
 [project.optional-dependencies]
@@ -52,10 +54,12 @@ check_untyped_defs = true
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PIE", "PT", "SIM"]
-ignore = ["E501"]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PIE", "PT", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 
 [tool.hatch.build.targets.wheel]

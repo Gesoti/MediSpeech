@@ -4,6 +4,7 @@ All tracing calls are best-effort — a Langfuse outage must never break the API
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 from typing import TYPE_CHECKING, Any
 
@@ -49,10 +50,8 @@ def create_trace(name: str, **kwargs: Any) -> Any:
 def flush() -> None:
     """Flush pending Langfuse events (call on app shutdown)."""
     if LANGFUSE_ENABLED and _langfuse is not None:
-        try:
+        with contextlib.suppress(Exception):
             _langfuse.flush()
-        except Exception:
-            pass
 
 
 def observe(span_name: str | None = None) -> Any:
@@ -64,25 +63,19 @@ def observe(span_name: str | None = None) -> Any:
             trace = create_trace(span_name or fn.__name__)
             span = None
             if trace is not None:
-                try:
+                with contextlib.suppress(Exception):
                     span = trace.span(name=span_name or fn.__name__)
-                except Exception:
-                    pass
             try:
                 result = await fn(*args, **kwargs)
                 if span is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         span.end()
-                    except Exception:
-                        pass
                 return result
             except Exception as exc:
                 if span is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         span.update(level="ERROR", status_message=str(exc))
                         span.end()
-                    except Exception:
-                        pass
                 raise
 
         return wrapper
