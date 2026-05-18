@@ -1,37 +1,32 @@
+# ---- deps stage ----
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
+
+# ---- runtime stage ----
 FROM python:3.12-slim
 
-# Create non-root user
-RUN useradd -m -u 1000 appuser
+RUN useradd -m -u 1000 appuser && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl ffmpeg postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ffmpeg \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/.venv .venv
 
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
-
-# Install dependencies using uv
-COPY pyproject.toml pyproject.toml
-COPY uv.lock uv.lock
-RUN uv sync --frozen
-
-# Copy project files
-COPY --chown=appuser:appuser app app
-COPY alembic alembic
+# alembic config changes less often than app source
 COPY alembic.ini alembic.ini
+COPY alembic alembic
+COPY --chown=appuser:appuser app app
 
-# Change ownership of the app directory to the non-root user
 USER appuser
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run uvicorn from the uv-managed venv
 CMD ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
