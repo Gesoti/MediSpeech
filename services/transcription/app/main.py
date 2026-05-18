@@ -46,7 +46,13 @@ def _load_model() -> WhisperModel:
     global _model
     if _model is None:
         # int8 quantisation halves memory with negligible quality loss on CPU
-        _model = WhisperModel(settings.whisper_model, device="cpu", compute_type="int8")
+        _model = WhisperModel(
+            settings.whisper_model,
+            device="cpu",
+            compute_type="int8",
+            # only needed for gated/private HF repos; None is fine for public models
+            use_auth_token=settings.hf_token,
+        )
     return _model
 
 

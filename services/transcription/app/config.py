@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
     whisper_model: str = "base"
+    hf_token: str | None = None
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = "pk-lf-dev"
     langfuse_secret_key: str = "sk-lf-dev"

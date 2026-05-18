@@ -58,6 +58,7 @@ services:
       HOST: 0.0.0.0
       PORT: "8001"
       WHISPER_MODEL: base
+      HF_TOKEN: ${HF_TOKEN:-}
       LANGFUSE_HOST: http://langfuse-server:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
@@ -113,8 +114,10 @@ services:
         condition: service_started
     volumes:
       - ./backend/app:/app/app
+      - audio_data:/audio
     command: /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   postgres_data:
   langfuse_postgres_data:
+  audio_data:
