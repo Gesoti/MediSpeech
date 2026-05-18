@@ -1,8 +1,9 @@
 """Report model."""
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
@@ -12,24 +13,21 @@ class Report(Base):
 
     __tablename__ = "reports"
 
-    id: Column = Column(Uuid, primary_key=True, default=uuid.uuid4)
-    case_id: Column = Column(Uuid, ForeignKey("cases.id"), nullable=False)
-    transcription_id: Column = Column(
-        Uuid, ForeignKey("transcriptions.id"), nullable=False
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(ForeignKey("cases.id"))
+    transcription_id: Mapped[UUID] = mapped_column(ForeignKey("transcriptions.id"))
+    clinical_history: Mapped[str | None] = mapped_column(Text)
+    findings: Mapped[str | None] = mapped_column(Text)
+    impressions: Mapped[str | None] = mapped_column(Text)
+    recommendations: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), default="draft")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
-    clinical_history: Column = Column(Text, nullable=True)
-    findings: Column = Column(Text, nullable=True)
-    impressions: Column = Column(Text, nullable=True)
-    recommendations: Column = Column(Text, nullable=True)
-    status: Column = Column(String(50), default="draft", nullable=False)
-    created_at: Column = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
-    )
-    updated_at: Column = Column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     def __repr__(self) -> str:

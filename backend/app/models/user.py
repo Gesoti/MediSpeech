@@ -1,8 +1,9 @@
 """User model."""
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, String, Uuid
+from sqlalchemy import DateTime, String
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
@@ -12,11 +13,13 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Column = Column(Uuid, primary_key=True, default=uuid.uuid4)
-    email: Column = Column(String(255), unique=True, nullable=False, index=True)
-    name: Column = Column(String(255), nullable=False)
-    created_at: Column = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    # nullable so existing rows without passwords remain valid
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
     def __repr__(self) -> str:

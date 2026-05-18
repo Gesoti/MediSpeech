@@ -1,8 +1,9 @@
 """Transcription model."""
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, String, Text, Uuid
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
@@ -12,15 +13,13 @@ class Transcription(Base):
 
     __tablename__ = "transcriptions"
 
-    id: Column = Column(Uuid, primary_key=True, default=uuid.uuid4)
-    audio_file_id: Column = Column(
-        Uuid, ForeignKey("audio_files.id"), nullable=False
-    )
-    raw_text: Column = Column(Text, nullable=False)
-    confidence: Column = Column(Float, nullable=True)
-    model_used: Column = Column(String(100), nullable=False)
-    created_at: Column = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    audio_file_id: Mapped[UUID] = mapped_column(ForeignKey("audio_files.id"))
+    raw_text: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    model_used: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
     def __repr__(self) -> str:
