@@ -89,9 +89,9 @@ async def upload_audio(
         logger.info(f"Audio processed successfully: {audio_file.id}")
 
         return {
-            "id": str(transcription.id),
+            "transcription_id": str(transcription.id),
             "audio_file_id": str(audio_file.id),
-            "raw_text": transcription_result["text"],
+            "text": transcription_result["text"],
             "confidence": transcription_result["confidence"],
             "model_used": transcription_result["model"],
             "created_at": transcription.created_at.isoformat(),

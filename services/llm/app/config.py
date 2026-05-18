@@ -1,8 +1,10 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DOTENV = os.path.join(os.path.dirname(__file__), ".env")
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, env_ignore_empty=True)
+    model_config = SettingsConfigDict(env_file=DOTENV, case_sensitive=False, env_ignore_empty=True, extra="ignore")
 
     host: str = "0.0.0.0"
     port: int = 8002

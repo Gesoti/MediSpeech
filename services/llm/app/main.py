@@ -2,52 +2,72 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app.config import settings
-from app.tracing import create_trace, flush
+from app.tracing import create_trace, flush, tracing_status
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="biogpt")
-_tokenizer: Any = None
-_model: Any = None
+_generator: Any = None
 _device: str = "cpu"
 
 
 def _load_model() -> None:
-    global _tokenizer, _model, _device
-    if _model is not None:
+    global _generator, _device
+    if _generator is not None:
         return
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    _tokenizer = AutoTokenizer.from_pretrained(settings.biogpt_model)
-    _model = AutoModelForCausalLM.from_pretrained(settings.biogpt_model).to(_device)
-
-
-def _generate_sync(prompt: str) -> str:
-    _load_model()
     import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
-    assert _tokenizer is not None
-    assert _model is not None
+    _device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(settings.biogpt_model)
+    model = AutoModelForCausalLM.from_pretrained(settings.biogpt_model).to(_device)
+    _generator = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=0 if _device == "cuda" else -1,
+    )
 
-    inputs = _tokenizer.encode(prompt, return_tensors="pt").to(_device)
-    with torch.no_grad():
-        outputs = _model.generate(
-            inputs,
-            num_beams=3,
-            early_stopping=True,
-            temperature=0.7,
-        )
-    result: str = _tokenizer.decode(outputs[0], skip_special_tokens=True)
-    if result.startswith(prompt):
-        result = result[len(prompt):]
-    return result.strip()
+
+def _remove_repetition(text: str) -> str:
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    seen: dict[str, None] = {}
+    unique: list[str] = []
+    for s in sentences:
+        key = s.lower().strip()
+        if key and key not in seen:
+            seen[key] = None
+            unique.append(s)
+    return " ".join(unique)
+
+
+def _generate_sync(prompt: str, max_new_tokens: int = 256) -> str:
+    _load_model()
+    assert _generator is not None
+
+    results: list[dict[str, Any]] = _generator(
+        prompt,
+        max_new_tokens=max_new_tokens,
+        num_beams=3,
+        early_stopping=True,
+        do_sample=False,
+        repetition_penalty=1.3,
+        no_repeat_ngram_size=3,
+    )
+    raw: str = results[0]["generated_text"]
+    # The pipeline prepends the input prompt to the output
+    if raw.startswith(prompt):
+        raw = raw[len(prompt):]
+    return _remove_repetition(raw.strip())
 
 
 @asynccontextmanager
@@ -76,13 +96,19 @@ async def health() -> dict[str, str]:
     return {"status": "healthy", "service": "llm"}
 
 
+@app.get("/health/tracing")
+async def health_tracing() -> dict[str, Any]:
+    return tracing_status()
+
+
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest) -> GenerateResponse:
     trace = create_trace("llm-generate", input={"prompt_length": len(req.prompt)})
     t0 = time.perf_counter()
 
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(_executor, _generate_sync, req.prompt)
+    fn = partial(_generate_sync, req.prompt, req.max_length)
+    text = await loop.run_in_executor(_executor, fn)
 
     elapsed = time.perf_counter() - t0
     if trace is not None:
