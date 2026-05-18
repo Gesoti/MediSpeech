@@ -1,6 +1,6 @@
 """Test configuration and fixtures."""
 import asyncio
-import tempfile
+from uuid import UUID
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -8,9 +8,13 @@ from fastapi.testclient import TestClient
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth import get_current_user_id
 from app.config import settings
 from app.db import Base, get_db
-from app.routes import audio, cases, reports, transcription
+from app.routes import audio, auth, cases, reports, transcription
+
+# Fixed user_id used by all tests — overrides JWT dependency
+_TEST_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 @pytest.fixture(autouse=True)
@@ -69,18 +73,22 @@ def client(test_engine):
         }
     
     # Register routers
+    app.include_router(auth.router)
     app.include_router(cases.router)
     app.include_router(audio.router)
     app.include_router(transcription.router)
     app.include_router(reports.router)
-    
-    # Override dependency with test session factory
+
+    # Override DB dependency with test session factory
     async def override_get_db():  # type: ignore[misc]
         async with TestSessionLocal() as session:
             yield session
-    
+
     app.dependency_overrides[get_db] = override_get_db
-    
+
+    # Bypass JWT auth so tests don't need real tokens
+    app.dependency_overrides[get_current_user_id] = lambda: _TEST_USER_ID
+
     return TestClient(app)
 
 

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import engine
-from app.routes import audio, cases, reports, transcription
+from app.routes import audio, auth, cases, reports, transcription
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
         }
 
     # Register routers
+    app.include_router(auth.router)
     app.include_router(cases.router)
     app.include_router(audio.router)
     app.include_router(transcription.router)

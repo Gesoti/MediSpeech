@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user_id
 from app.db import get_db
 from app.models.case import Case
-from app.models.user import User
 from app.schemas.case import CaseCreate, CaseResponse, CaseUpdate
 from app.utils.logger import get_logger
 
@@ -18,22 +18,10 @@ logger = get_logger(__name__)
 @router.post("", status_code=201)
 async def create_case(
     case_data: CaseCreate,
+    user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> CaseResponse:
-    """Create a new case."""
-    # For now, use fixed user_id (later will be from auth context)
-    user_id = UUID("00000000-0000-0000-0000-000000000001")
-
-    # Verify user exists or create if not
-    result = await db.execute(select(User).filter(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        user = User(
-            id=user_id, email="demo@medispeech.local", name="Demo User"
-        )
-        db.add(user)
-        await db.flush()
-
+    """Create a new case for the authenticated user."""
     case = Case(
         user_id=user_id,
         pet_species=case_data.pet_species,
@@ -75,6 +63,7 @@ async def get_case(
 async def update_case(
     case_id: UUID,
     case_data: CaseUpdate,
+    user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> CaseResponse:
     """Update a case."""
@@ -98,6 +87,7 @@ async def update_case(
 @router.delete("/{case_id}")
 async def delete_case(
     case_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Delete a case (cascades to audio, transcriptions, reports)."""
