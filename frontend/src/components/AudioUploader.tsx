@@ -2,6 +2,8 @@ import { useState, useRef, useCallback } from "react";
 import { Upload, Mic, Square, Pause, Play, Loader2, Check, Edit2 } from "lucide-react";
 import type { Transcription } from "@/types";
 import { audioApi, transcriptionsApi } from "@/api/client";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { useApiError } from "@/hooks/useApiError";
 
 interface AudioUploaderProps {
   caseId: string;
@@ -12,7 +14,7 @@ type RecordState = "idle" | "recording" | "paused" | "uploading" | "editing";
 
 export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   const [recordState, setRecordState] = useState<RecordState>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const { error, setError, clearError } = useApiError();
   const [dragOver, setDragOver] = useState(false);
   const [editableText, setEditableText] = useState("");
   const [pendingTranscription, setPendingTranscription] = useState<Transcription | null>(null);
@@ -25,7 +27,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   const uploadAndAppend = useCallback(
     async (file: File, existingText: string) => {
       setRecordState("uploading");
-      setError(null);
+      clearError();
       try {
         const result = await audioApi.upload(caseId, file);
         // Combine existing (edited) text with the new transcription segment
@@ -38,7 +40,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
         setPendingTranscription(merged);
         setRecordState("editing");
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Upload failed");
+        setError(e);
         setRecordState(existingText ? "editing" : "idle");
       }
     },
@@ -46,7 +48,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   );
 
   const startRecording = async () => {
-    setError(null);
+    clearError();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
@@ -64,7 +66,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
       mediaRef.current = recorder;
       setRecordState("recording");
     } catch {
-      setError("Microphone access denied");
+      setError(new Error("Microphone access denied"));
     }
   };
 
@@ -92,7 +94,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
       setEditableText("");
       setPendingTranscription(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save edits");
+      setError(e);
     } finally {
       setSavingEdit(false);
     }
@@ -236,7 +238,7 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
         </>
       )}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <ErrorBanner message={error} onDismiss={clearError} />}
     </div>
   );
 }

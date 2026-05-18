@@ -19,6 +19,8 @@ import { casesApi, audioApi, reportsApi, transcriptionsApi } from "@/api/client"
 import { AudioUploader } from "@/components/AudioUploader";
 import { ReportEditor } from "@/components/ReportEditor";
 import { StreamingReportViewer } from "@/components/StreamingReportViewer";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { useApiError } from "@/hooks/useApiError";
 
 type ReportMode = "none" | "streaming" | "done";
 
@@ -29,6 +31,7 @@ export function CaseDetailPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { error: reportError, setError: setReportError, clearError: clearReportError } = useApiError();
   const [expandedTx, setExpandedTx] = useState<string | null>(null);
   const [reportMode, setReportMode] = useState<ReportMode>("none");
   const [streamingTxId, setStreamingTxId] = useState<string | null>(null);
@@ -75,7 +78,7 @@ export function CaseDetailPage() {
   const generateReportStream = (transcriptionId: string) => {
     setStreamingTxId(transcriptionId);
     setReportMode("streaming");
-    setError(null);
+    clearReportError();
   };
 
   const startEditing = (t: Transcription) => {
@@ -90,7 +93,7 @@ export function CaseDetailPage() {
       setTranscriptions((prev) => prev.map((t) => (t.id === id ? updated : t)));
       setEditingTxId(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save transcription");
+      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
     } finally {
       setSavingTx(false);
     }
@@ -99,13 +102,13 @@ export function CaseDetailPage() {
   /** Blocking fallback (kept for reliability) */
   const generateReportBlocking = async (transcriptionId: string) => {
     setGeneratingReport(true);
-    setError(null);
+    clearReportError();
     try {
       const r = await reportsApi.create({ transcription_id: transcriptionId });
       setReport(r);
       setReportMode("done");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Report generation failed");
+      setReportError(e);
     } finally {
       setGeneratingReport(false);
     }
@@ -149,9 +152,7 @@ export function CaseDetailPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
-          {error}
-        </div>
+        <ErrorBanner message={error} onDismiss={() => setError(null)} />
       )}
 
       <div className="grid lg:grid-cols-2 gap-6">
@@ -289,6 +290,11 @@ export function CaseDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Report generation error */}
+      {reportError && (
+        <ErrorBanner message={reportError} onDismiss={clearReportError} />
+      )}
 
       {/* Streaming report generation */}
       {reportMode === "streaming" && streamingTxId && (
