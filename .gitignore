@@ -70,3 +70,4 @@ build/
 # Claude Code — private config, never commit
 .claude/
 CLAUDE.md
+PM/
