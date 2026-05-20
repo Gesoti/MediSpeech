@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 
 from faster_whisper import WhisperModel
 from faster_whisper.transcribe import Segment
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -108,7 +108,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     flush()
 
 
-app = FastAPI(title="MediSpeech Transcription Service", lifespan=lifespan)
+app = FastAPI(
+    title="MediSpeech Transcription Service",
+    description=(
+        "Internal Whisper-based transcription service.\n\n"
+        "**Endpoints:**\n"
+        "- `POST /transcribe` — upload an audio file, get back full text + confidence (blocking)\n"
+        "- `POST /transcribe/stream` — same but streams SSE segments as Whisper decodes them\n\n"
+        "**Accepted audio formats:** webm, wav, mp3, ogg, m4a\n\n"
+        "SSE segment events: `{\"start\": float, \"end\": float, \"text\": str}`  \n"
+        "Final meta event: `{\"type\": \"meta\", \"model\": str, \"confidence\": float|null}`  \n"
+        "Done sentinel: `[DONE]`"
+    ),
+    lifespan=lifespan,
+)
 
 
 class TranscriptionResponse(BaseModel):
@@ -203,3 +216,85 @@ async def transcribe_stream(file: UploadFile = File(...)) -> StreamingResponse:
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+
+@app.websocket("/ws/transcribe")
+async def ws_transcribe(websocket: WebSocket) -> None:
+    """Live transcription over WebSocket.
+
+    Protocol:
+      Client → Server: binary audio chunks (WebM) while recording
+      Client → Server: JSON {"type": "end"} when recording stops
+      Server → Client: JSON {"type": "partial", "text": "<full transcript so far>"} every ~3s
+      Server → Client: JSON {"type": "final", "text": "...", "confidence": float|null, "model": str}
+    """
+    await websocket.accept()
+
+    audio_buffer = bytearray()
+    last_text = ""
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    async def _periodic() -> None:
+        """Every 3 seconds, transcribe the accumulated buffer and emit partial text."""
+        nonlocal last_text
+        while True:
+            try:
+                await asyncio.sleep(3.0)
+            except asyncio.CancelledError:
+                return
+            if not audio_buffer:
+                continue
+            buf_snapshot = bytes(audio_buffer)
+            try:
+                segments, _ = await loop.run_in_executor(_executor, _transcribe_sync, buf_snapshot)
+                new_text = " ".join(s.text.strip() for s in segments)
+                if new_text and new_text != last_text:
+                    last_text = new_text
+                    await websocket.send_text(
+                        json.dumps({"type": "partial", "text": new_text})
+                    )
+            except Exception:
+                pass  # transient decode error on incomplete buffer — skip
+
+    periodic_task = asyncio.create_task(_periodic())
+
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("bytes") is not None:
+                audio_buffer.extend(msg["bytes"])
+            elif msg.get("text") is not None:
+                event = json.loads(msg["text"])
+                if event.get("type") == "end":
+                    break
+            elif msg.get("type") == "websocket.disconnect":
+                stop_event.set()
+                periodic_task.cancel()
+                return
+    except WebSocketDisconnect:
+        stop_event.set()
+        periodic_task.cancel()
+        return
+
+    stop_event.set()
+    periodic_task.cancel()
+
+    # Final authoritative transcription over the full buffer
+    if audio_buffer:
+        segments, confidence = await loop.run_in_executor(
+            _executor, _transcribe_sync, bytes(audio_buffer)
+        )
+        full_text = " ".join(s.text.strip() for s in segments)
+    else:
+        full_text, confidence = "", None
+
+    await websocket.send_text(
+        json.dumps({
+            "type": "final",
+            "text": full_text,
+            "confidence": confidence,
+            "model": f"faster-whisper-{settings.whisper_model}",
+        })
+    )
+    await websocket.close()

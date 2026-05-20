@@ -6,14 +6,16 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ReportCreate(BaseModel):
-    """Schema for creating a report."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"transcription_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"}
+        }
+    )
 
     transcription_id: UUID
 
 
 class ReportResponse(BaseModel):
-    """Schema for report response."""
-
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -29,9 +31,18 @@ class ReportResponse(BaseModel):
 
 
 class ReportUpdate(BaseModel):
-    """Schema for updating a report."""
-
-    model_config = ConfigDict(strict=True)
+    model_config = ConfigDict(
+        strict=True,
+        json_schema_extra={
+            "example": {
+                "clinical_history": "3-year-old Golden Retriever presented with coughing.",
+                "findings": "Mild cardiomegaly observed. No pleural effusion.",
+                "impressions": "Findings consistent with early-stage dilated cardiomyopathy.",
+                "recommendations": "Echocardiogram recommended. Follow-up in 4 weeks.",
+                "status": "final",
+            }
+        },
+    )
 
     clinical_history: str | None = None
     findings: str | None = None
@@ -41,7 +52,16 @@ class ReportUpdate(BaseModel):
 
 
 class StreamedReportSave(BaseModel):
-    """Schema for saving a report produced by the streaming endpoint."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "clinical_history": "3-year-old Golden Retriever presented with coughing.",
+                "findings": "Mild cardiomegaly observed.",
+                "impressions": "Consistent with early dilated cardiomyopathy.",
+                "recommendations": "Echocardiogram recommended.",
+            }
+        }
+    )
 
     clinical_history: str | None = None
     findings: str | None = None

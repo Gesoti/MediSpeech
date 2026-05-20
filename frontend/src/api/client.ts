@@ -141,6 +141,26 @@ export const audioApi = {
     }
     throw new Error("Stream ended without a done event");
   },
+  /** Transcribe a short audio chunk for live preview — no DB record created. */
+  previewTranscribe: async (file: File): Promise<string> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${BASE}/audio/preview`, {
+      method: "POST",
+      body: form,
+      headers: authHeader(),
+    });
+    if (!res.ok) return "";
+    const data = await res.json() as { text: string };
+    return data.text ?? "";
+  },
+
+  /** WebSocket URL for live recording — works through Vite proxy in dev and nginx in prod. */
+  liveWsUrl: (caseId: string): string => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/api/audio/${caseId}/ws`;
+  },
+
   listTranscriptions: (caseId: string) =>
     request<Transcription[]>(`/audio/${caseId}/transcriptions`),
   getTranscription: (transcriptionId: string) =>

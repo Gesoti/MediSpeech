@@ -83,7 +83,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     flush()
 
 
-app = FastAPI(title="MediSpeech LLM Service", lifespan=lifespan)
+app = FastAPI(
+    title="MediSpeech LLM Service",
+    description=(
+        "Internal BioGPT clinical report generation service.\n\n"
+        "**Endpoints:**\n"
+        "- `POST /generate` — generate clinical text from a prompt (blocking)\n"
+        "- `POST /generate/stream` — stream generation token-by-token via SSE\n\n"
+        "SSE events: `data: <token>\\n\\n`  \n"
+        "Done sentinel: `data: [DONE]`\n\n"
+        "`max_length` controls the maximum number of new tokens generated (default 512)."
+    ),
+    lifespan=lifespan,
+)
 
 
 class GenerateRequest(BaseModel):

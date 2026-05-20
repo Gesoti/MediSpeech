@@ -6,9 +6,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CaseCreate(BaseModel):
-    """Schema for creating a case."""
-
-    model_config = ConfigDict(strict=True)
+    model_config = ConfigDict(
+        strict=True,
+        json_schema_extra={
+            "example": {
+                "pet_species": "Canine",
+                "pet_breed": "Golden Retriever",
+                "study_type": "Thoracic Radiograph",
+            }
+        },
+    )
 
     pet_species: str = Field(..., min_length=1, max_length=100)
     pet_breed: str = Field(..., min_length=1, max_length=100)
@@ -16,9 +23,12 @@ class CaseCreate(BaseModel):
 
 
 class CaseUpdate(BaseModel):
-    """Schema for updating a case."""
-
-    model_config = ConfigDict(strict=True)
+    model_config = ConfigDict(
+        strict=True,
+        json_schema_extra={
+            "example": {"study_type": "Abdominal Ultrasound"}
+        },
+    )
 
     pet_species: str | None = None
     pet_breed: str | None = None
@@ -26,8 +36,6 @@ class CaseUpdate(BaseModel):
 
 
 class CaseResponse(BaseModel):
-    """Schema for case response."""
-
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

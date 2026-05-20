@@ -25,6 +25,10 @@ COPY transcription/app app
 
 USER appuser
 
+# Pre-create the HuggingFace cache dir as appuser so Docker seeds any named
+# volume mounted here with correct ownership on first container start.
+RUN mkdir -p /home/appuser/.cache/huggingface
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 

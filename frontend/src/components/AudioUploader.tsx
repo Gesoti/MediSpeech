@@ -1,9 +1,59 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, Mic, Square, Pause, Play, Loader2, Check, Edit2, Radio } from "lucide-react";
 import type { Transcription } from "@/types";
 import { audioApi, transcriptionsApi } from "@/api/client";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { useApiError } from "@/hooks/useApiError";
+
+const CHUNK_INTERVAL_MS = 3000;
+const WORD_REVEAL_MS = 60;
+
+/** Animates a target string word-by-word whenever it changes. */
+function useWordReveal(target: string): string {
+  const [revealed, setRevealed] = useState("");
+  const revealedRef = useRef("");
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+
+    if (!target) {
+      revealedRef.current = "";
+      setRevealed("");
+      return;
+    }
+
+    // Only animate the words not yet shown; use ref to avoid stale closure.
+    const prev = revealedRef.current.trimEnd();
+    const alreadyShown = prev && target.startsWith(prev) ? prev : "";
+    const remaining = alreadyShown ? target.slice(alreadyShown.length).trimStart() : target;
+    const newWords = remaining.split(/\s+/).filter(Boolean);
+
+    if (!newWords.length) {
+      revealedRef.current = target;
+      setRevealed(target);
+      return;
+    }
+
+    let i = 0;
+    const base = alreadyShown ? alreadyShown + " " : "";
+
+    const tick = () => {
+      i++;
+      const next = base + newWords.slice(0, i).join(" ");
+      revealedRef.current = next;
+      setRevealed(next);
+      if (i < newWords.length) {
+        timerRef.current = setTimeout(tick, WORD_REVEAL_MS);
+      }
+    };
+    timerRef.current = setTimeout(tick, WORD_REVEAL_MS);
+
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [target]);
+
+  return revealed;
+}
 
 interface AudioUploaderProps {
   caseId: string;
@@ -20,10 +70,21 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   const [streamingText, setStreamingText] = useState("");
   const [pendingTranscription, setPendingTranscription] = useState<Transcription | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
+  const [liveText, setLiveText] = useState("");
+  const revealedLive = useWordReveal(liveText);
+  const revealedStreaming = useWordReveal(streamingText);
 
   const mediaRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  // Track editableText in a ref so WS message handlers always see the current value.
+  const editableTextRef = useRef(editableText);
+  useEffect(() => { editableTextRef.current = editableText; }, [editableText]);
+
+  // Close any open WebSocket when the component unmounts mid-recording.
+  useEffect(() => {
+    return () => { wsRef.current?.close(); };
+  }, []);
 
   const uploadAndAppend = useCallback(
     async (file: File, existingText: string) => {
@@ -47,10 +108,12 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
         setEditableText(combined);
         setPendingTranscription(merged);
         setStreamingText("");
+        setLiveText("");
         setRecordState("editing");
       } catch (e) {
         setError(e);
         setStreamingText("");
+        setLiveText("");
         setRecordState(existingText ? "editing" : "idle");
       }
     },
@@ -62,17 +125,78 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => chunksRef.current.push(e.data);
+
+      // Open WebSocket — stays open for the full recording session
+      const ws = new WebSocket(audioApi.liveWsUrl(caseId));
+      ws.binaryType = "blob";
+      wsRef.current = ws;
+
+      ws.onmessage = (e: MessageEvent<string>) => {
+        const event = JSON.parse(e.data) as {
+          type: "partial" | "final" | "error";
+          text?: string;
+          transcription_id?: string;
+          audio_file_id?: string;
+          confidence?: number | null;
+          model?: string;
+          detail?: string;
+        };
+
+        if (event.type === "partial" && event.text) {
+          setLiveText(event.text);
+        }
+
+        if (event.type === "final") {
+          const transcription: Transcription = {
+            id: event.transcription_id!,
+            audio_file_id: event.audio_file_id!,
+            raw_text: event.text ?? "",
+            confidence: event.confidence ?? null,
+            model_used: event.model ?? "faster-whisper",
+            created_at: new Date().toISOString(),
+          };
+          // Use ref to read current editableText — not the value captured at recording start.
+          const base = editableTextRef.current;
+          const combined = base
+            ? `${base.trimEnd()} ${transcription.raw_text.trimStart()}`
+            : transcription.raw_text;
+          const merged: Transcription = { ...transcription, raw_text: combined };
+          setEditableText(combined);
+          setPendingTranscription(merged);
+          setLiveText("");
+          setRecordState("editing");
+        }
+
+        if (event.type === "error") {
+          setError(new Error(event.detail ?? "Live transcription failed"));
+          setLiveText("");
+          setRecordState(editableTextRef.current ? "editing" : "idle");
+        }
+      };
+
+      ws.onerror = () => {
+        setError(new Error("WebSocket connection failed"));
+        setLiveText("");
+        setRecordState(editableTextRef.current ? "editing" : "idle");
+      };
+
+      recorder.ondataavailable = (e) => {
+        if (!e.data.size) return;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(e.data);
+        }
+      };
+
       recorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        void uploadAndAppend(
-          new File([blob], "recording.webm", { type: "audio/webm" }),
-          editableText,
-        );
+        // Signal end-of-recording; server does final transcription + DB save
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "end" }));
+        }
+        setRecordState("uploading");
       };
-      recorder.start();
+
+      recorder.start(CHUNK_INTERVAL_MS);
       mediaRef.current = recorder;
       setRecordState("recording");
     } catch {
@@ -81,10 +205,8 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
   };
 
   const pauseRecording = () => {
-    // Stop the current recording segment — onstop will upload it
     mediaRef.current?.stop();
     mediaRef.current = null;
-    // recordState transitions to "uploading" then "editing" via uploadAndAppend
   };
 
   const stopAndUpload = () => {
@@ -99,10 +221,10 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
       // Persist the user-edited text back to the DB
       const updated = await transcriptionsApi.update(pendingTranscription.id, editableText);
       onTranscribed(updated);
-      // Reset
       setRecordState("idle");
       setEditableText("");
       setPendingTranscription(null);
+      setLiveText("");
     } catch (e) {
       setError(e);
     } finally {
@@ -151,15 +273,15 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
                     Transcribing…
                   </span>
                 </div>
-                {streamingText ? (
+                {revealedStreaming || revealedLive ? (
                   <p className="text-sm text-slate-700 leading-relaxed w-full">
-                    {streamingText}
+                    {revealedStreaming || revealedLive}
                     <span className="inline-block w-0.5 h-4 ml-0.5 bg-primary-500 align-text-bottom animate-pulse" />
                   </p>
                 ) : (
                   <div className="flex items-center gap-2 text-slate-400">
                     <Loader2 size={14} className="animate-spin" />
-                    <span className="text-xs">Waiting for first segment…</span>
+                    <span className="text-xs">Processing…</span>
                   </div>
                 )}
               </div>
@@ -234,21 +356,43 @@ export function AudioUploader({ caseId, onTranscribed }: AudioUploaderProps) {
           </div>
 
           {isRecording ? (
-            <div className="flex gap-2">
-              <button
-                onClick={pauseRecording}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium bg-amber-100 hover:bg-amber-200 text-amber-700 transition-colors"
-              >
-                <Pause size={15} />
-                Pause & Edit
-              </button>
-              <button
-                onClick={stopAndUpload}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
-              >
-                <Square size={15} />
-                Stop Recording
-              </button>
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <button
+                  onClick={pauseRecording}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium bg-amber-100 hover:bg-amber-200 text-amber-700 transition-colors"
+                >
+                  <Pause size={15} />
+                  Pause & Edit
+                </button>
+                <button
+                  onClick={stopAndUpload}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
+                >
+                  <Square size={15} />
+                  Stop Recording
+                </button>
+              </div>
+
+              {/* Live transcription preview */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 min-h-[80px]">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Mic size={12} className="text-red-500 animate-pulse" />
+                  <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                    Listening…
+                  </span>
+                </div>
+                {revealedLive ? (
+                  <p className="text-sm text-slate-700 leading-relaxed">
+                    {revealedLive}
+                    <span className="inline-block w-0.5 h-4 ml-0.5 bg-primary-500 align-text-bottom animate-pulse" />
+                  </p>
+                ) : (
+                  <p className="text-sm text-slate-400 italic">
+                    Speak — words will appear here…
+                  </p>
+                )}
+              </div>
             </div>
           ) : (
             <button

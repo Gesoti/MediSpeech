@@ -11,9 +11,19 @@ from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=201,
+    summary="Register a new user",
+    responses={400: {"description": "Email already registered"}},
+)
 async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    """Register a new user and return a JWT."""
+    """Create a new account and receive a JWT bearer token.
+
+    Use the returned `access_token` as `Authorization: Bearer <token>` on all
+    subsequent requests.
+    """
     result = await db.execute(select(User).filter(User.email == data.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -24,9 +34,14 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)) ->
     return TokenResponse(access_token=create_access_token(user.id))
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    summary="Log in",
+    responses={401: {"description": "Invalid credentials"}},
+)
 async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    """Authenticate with email/password and return a JWT."""
+    """Authenticate with email and password. Returns a JWT bearer token."""
     result = await db.execute(select(User).filter(User.email == data.email))
     user = result.scalar_one_or_none()
     if not user or not user.password_hash or not verify_password(data.password, user.password_hash):

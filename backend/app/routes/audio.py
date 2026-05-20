@@ -1,4 +1,5 @@
 """Audio file upload routes."""
+import asyncio
 import contextlib
 import json
 import os
@@ -7,7 +8,9 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+import websockets
+import websockets.exceptions
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +26,7 @@ from app.utils.tracing import create_trace
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 logger = get_logger(__name__)
+
 
 
 @router.post("/{case_id}/upload")
@@ -180,6 +184,20 @@ async def upload_audio_stream(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@router.post("/preview")
+async def preview_transcribe(
+    file: UploadFile = File(...),
+) -> dict[str, str]:
+    """Transcribe a short audio chunk for live preview — no DB writes."""
+    audio_bytes = await file.read()
+    try:
+        result = await audio_service.transcribe(audio_bytes, filename=file.filename or "chunk.webm")
+        return {"text": result["text"]}
+    except Exception as e:
+        logger.warning(f"Preview transcription failed: {e}")
+        return {"text": ""}
+
+
 @router.get("/{case_id}/transcriptions")
 async def list_transcriptions(
     case_id: UUID,
@@ -226,3 +244,102 @@ async def get_transcription(
         "model_used": transcription.model_used,
         "created_at": transcription.created_at.isoformat(),
     }
+
+
+@router.websocket("/{case_id}/ws")
+async def audio_ws(
+    websocket: WebSocket,
+    case_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Live recording WebSocket proxy.
+
+    Streams binary audio chunks from the browser to the transcription service,
+    forwards partial text back in real-time, and persists the final transcription
+    to the database when the session ends.
+    """
+    case_result = await db.execute(select(Case).filter(Case.id == case_id))
+    if not case_result.scalar_one_or_none():
+        await websocket.close(code=4004, reason="Case not found")
+        return
+
+    await websocket.accept()
+
+    audio_buffer = bytearray()
+
+    try:
+        ts_ws_url = settings.transcription_service_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws/transcribe"
+        async with websockets.connect(ts_ws_url) as ts_ws:
+
+            async def _forward_to_ts() -> None:
+                """Relay browser chunks → transcription service."""
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg.get("bytes") is not None:
+                            chunk: bytes = msg["bytes"]
+                            audio_buffer.extend(chunk)
+                            await ts_ws.send(chunk)
+                        elif msg.get("text") is not None:
+                            # Pass control messages ({"type":"end"}) straight through
+                            await ts_ws.send(msg["text"])
+                            if json.loads(msg["text"]).get("type") == "end":
+                                return
+                        elif msg.get("type") == "websocket.disconnect":
+                            return
+                except WebSocketDisconnect:
+                    pass
+
+            async def _forward_to_browser() -> None:
+                """Relay transcription service messages → browser, persisting on final."""
+                async for raw in ts_ws:
+                    event: dict[str, Any] = json.loads(raw)
+
+                    if event.get("type") == "final":
+                        # Persist audio + transcription to DB
+                        audio_dir = os.path.join(settings.audio_storage_path, str(case_id))
+                        os.makedirs(audio_dir, exist_ok=True)
+                        filename = f"recording_{int(time.time())}.webm"
+                        with open(os.path.join(audio_dir, filename), "wb") as fh:
+                            fh.write(bytes(audio_buffer))
+
+                        audio_file = AudioFile(
+                            case_id=case_id,
+                            raw_audio_url=f"{case_id}/{filename}",
+                            duration_seconds=0.0,
+                        )
+                        db.add(audio_file)
+                        await db.flush()
+
+                        transcription = Transcription(
+                            audio_file_id=audio_file.id,
+                            raw_text=event.get("text", ""),
+                            confidence=event.get("confidence"),
+                            model_used=event.get("model", "faster-whisper"),
+                        )
+                        db.add(transcription)
+                        await db.commit()
+
+                        enriched = {
+                            **event,
+                            "transcription_id": str(transcription.id),
+                            "audio_file_id": str(audio_file.id),
+                        }
+                        with contextlib.suppress(Exception):
+                            await websocket.send_text(json.dumps(enriched))
+                        return
+
+                    with contextlib.suppress(Exception):
+                        await websocket.send_text(raw)
+
+            await asyncio.gather(_forward_to_ts(), _forward_to_browser())
+
+    except websockets.exceptions.WebSocketException as exc:
+        logger.error(f"Transcription service WS error: {exc}")
+        with contextlib.suppress(Exception):
+            await websocket.send_text(
+                json.dumps({"type": "error", "detail": "Transcription service unavailable"})
+            )
+    finally:
+        with contextlib.suppress(Exception):
+            await websocket.close()

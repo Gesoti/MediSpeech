@@ -20,9 +20,6 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv .venv
 
-# alembic config changes less often than app source
-COPY alembic.ini alembic.ini
-COPY alembic alembic
 COPY --chown=appuser:appuser app app
 
 USER appuser
