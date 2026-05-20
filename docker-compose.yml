@@ -62,8 +62,6 @@ services:
       LANGFUSE_HOST: http://langfuse-server:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
-    ports:
-      - "8001:8001"
     volumes:
       - hf_cache:/home/appuser/.cache/huggingface
     depends_on:
@@ -83,8 +81,6 @@ services:
       LANGFUSE_HOST: http://langfuse-server:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
-    ports:
-      - "8002:8002"
     depends_on:
       langfuse-server:
         condition: service_started

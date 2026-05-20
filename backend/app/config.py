@@ -1,5 +1,10 @@
 """Application configuration using pydantic-settings."""
+import os
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEV_SECRET = "dev-secret-change-in-production"
 
 
 class Settings(BaseSettings):
@@ -27,9 +32,20 @@ class Settings(BaseSettings):
     audio_storage_path: str = "/audio"
 
     # JWT authentication
-    jwt_secret: str = "dev-secret-change-in-production"
+    jwt_secret: str = _DEV_SECRET
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24  # 24 hours
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def jwt_secret_must_be_strong(cls, v: str) -> str:
+        if os.getenv("ENV", "development").lower() == "development":
+            return v
+        if v == _DEV_SECRET:
+            raise ValueError("JWT_SECRET must be changed from the default in non-development environments")
+        if len(v) < 32:
+            raise ValueError("JWT_SECRET must be at least 32 characters")
+        return v
 
     # CORS
     allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]

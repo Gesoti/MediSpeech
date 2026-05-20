@@ -3,6 +3,8 @@ import asyncio
 import contextlib
 import json
 import os
+import pathlib
+import re
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -27,6 +29,13 @@ from app.utils.tracing import create_trace
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 logger = get_logger(__name__)
 
+_SAFE_NAME_RE = re.compile(r"[^\w\-.]")
+
+
+def _safe_filename(name: str | None, fallback: str = "audio.webm") -> str:
+    """Return a filename with no path components and only safe characters."""
+    stem = pathlib.Path(name or fallback).name
+    return _SAFE_NAME_RE.sub("_", stem) or fallback
 
 
 @router.post("/{case_id}/upload")
@@ -55,7 +64,7 @@ async def upload_audio(
         # Persist audio bytes to the mounted volume so they survive restarts
         audio_dir = os.path.join(settings.audio_storage_path, str(case_id))
         os.makedirs(audio_dir, exist_ok=True)
-        filename = file.filename or "audio.webm"
+        filename = _safe_filename(file.filename)
         audio_path = os.path.join(audio_dir, filename)
         with open(audio_path, "wb") as fh:
             fh.write(audio_bytes)
@@ -72,7 +81,7 @@ async def upload_audio(
 
         t0 = time.perf_counter()
         transcription_result = await audio_service.transcribe(
-            audio_bytes, filename=file.filename or "audio.webm"
+            audio_bytes, filename=_safe_filename(file.filename)
         )
         elapsed = time.perf_counter() - t0
 
@@ -140,7 +149,7 @@ async def upload_audio_stream(
     # Persist audio file to the mounted volume
     audio_dir = os.path.join(settings.audio_storage_path, str(case_id))
     os.makedirs(audio_dir, exist_ok=True)
-    filename = file.filename or "audio.webm"
+    filename = _safe_filename(file.filename)
     with open(os.path.join(audio_dir, filename), "wb") as fh:
         fh.write(audio_bytes)
 

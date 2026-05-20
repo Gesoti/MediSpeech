@@ -26,13 +26,15 @@ A veterinary radiologist speaks their observations into a microphone. MediSpeech
 ```
 Browser (React + Vite)
         │
-        │  REST + SSE (port 5173 in dev, proxied to 8000)
+        │  REST + SSE + WebSocket (port 5173 in dev, proxied to 8000)
         ▼
 ┌─────────────────────────────────────────────┐
 │   FastAPI API  (:8000)                      │
 │                                             │
+│  routes/auth.py           JWT auth (register/login)
 │  routes/cases.py          Case CRUD         │
 │  routes/audio.py          upload → transcribe → store
+│                           WebSocket live recording proxy
 │  routes/transcription.py  read/edit text    │
 │  routes/reports.py        LLM pipeline + SSE│
 │                                             │
@@ -50,8 +52,8 @@ Browser (React + Vite)
 └──────────────────┘   └───────────────────────┘
 
 services/
-├── transcription/  Whisper microservice (:8001) — POST /transcribe
-└── llm/            BioGPT microservice  (:8002) — POST /generate
+├── transcription/  Whisper microservice (:8001, internal only) — POST /transcribe, WS /ws/transcribe
+└── llm/            BioGPT microservice  (:8002, internal only) — POST /generate
 ```
 
 **ML inference is fully decoupled from the API.** The FastAPI backend contains no ML dependencies — it delegates all model calls over HTTP to the two microservices. This means:
@@ -70,11 +72,11 @@ The primary application. Handles all business logic, database access, and orches
 
 | File | Responsibility |
 |------|----------------|
-| `app/main.py` | Application factory: creates the FastAPI app, registers CORS, mounts routers, runs DB migrations on startup, flushes Langfuse on shutdown |
+| `app/main.py` | Application factory: creates the FastAPI app, registers CORS, mounts routers, runs `create_all` on startup, flushes Langfuse on shutdown |
 | `app/config.py` | Typed settings via `pydantic-settings`; reads from `.env` or environment variables |
 | `app/db.py` | Async SQLAlchemy engine + `AsyncSession` factory + `get_db` FastAPI dependency |
 | `app/routes/cases.py` | CRUD for `Case` records (POST, GET list, GET one, PATCH, DELETE) |
-| `app/routes/audio.py` | Accept audio upload → call transcription service → store result in DB; list/get transcriptions |
+| `app/routes/audio.py` | Accept audio upload → call transcription service → store result in DB; WebSocket live recording proxy; list/get transcriptions |
 | `app/routes/transcription.py` | Read and user-edit transcription text (`GET /api/transcriptions/{audio_file_id}`, `PATCH /api/transcriptions/{id}`) |
 | `app/routes/reports.py` | Generate a clinical report (blocking `POST /api/reports` or streaming `POST /api/reports/stream/{transcription_id}`); save, update, finalize |
 | `app/services/audio_service.py` | HTTP client for the transcription microservice; sends multipart audio and returns a `TranscriptionResult` |
@@ -84,15 +86,17 @@ The primary application. Handles all business logic, database access, and orches
 | `app/utils/logger.py` | Structured stdout logging using Python's stdlib `logging` |
 | `app/models/` | SQLAlchemy ORM models: `User`, `Case`, `AudioFile`, `Transcription`, `Report` |
 | `app/schemas/` | Pydantic v2 request/response schemas with strict mode |
-| `alembic/` | Database migration scripts managed by Alembic |
+| `app/auth.py` | JWT creation/verification and bcrypt password hashing |
 
 ### Transcription microservice (`services/transcription/`)
 
-Standalone FastAPI app that owns the Whisper model. The API backend calls it at `POST /transcribe` with a multipart audio file and receives `{text, confidence, model}`. Runs Whisper in a `ThreadPoolExecutor` so the async event loop is never blocked. Warms the model at startup.
+Standalone FastAPI app that owns the Whisper model. The API backend calls it at `POST /transcribe` (blocking) or proxies binary audio chunks via WebSocket at `WS /ws/transcribe` for live recording sessions. Runs Whisper in a `ThreadPoolExecutor` so the async event loop is never blocked. Warms the model at startup.
+
+> This service is **internal only** — its port is not exposed on the host in Docker Compose.
 
 | File | Responsibility |
 |------|----------------|
-| `app/main.py` | FastAPI app: `GET /health`, `POST /transcribe` |
+| `app/main.py` | FastAPI app: `GET /health`, `POST /transcribe`, `WS /ws/transcribe` |
 | `app/config.py` | Settings: `host`, `port`, `whisper_model`, Langfuse keys |
 | `app/tracing.py` | Langfuse best-effort tracing (same pattern as backend) |
 | `Dockerfile` | Slim Python 3.12 image with ffmpeg; installs only Whisper deps |
@@ -101,6 +105,8 @@ Standalone FastAPI app that owns the Whisper model. The API backend calls it at 
 ### LLM microservice (`services/llm/`)
 
 Standalone FastAPI app that owns the BioGPT model. The API backend calls it at `POST /generate` with a JSON body `{prompt, max_length}` and receives `{text, model}`. Runs generation in a `ThreadPoolExecutor`. Warms the model at startup.
+
+> This service is **internal only** — its port is not exposed on the host in Docker Compose.
 
 | File | Responsibility |
 |------|----------------|
@@ -114,22 +120,25 @@ Standalone FastAPI app that owns the BioGPT model. The API backend calls it at `
 
 | File | Responsibility |
 |------|----------------|
-| `src/App.tsx` | React Router setup: `/`, `/cases/:id`, `/reports` |
-| `src/api/client.ts` | Typed API client functions (`casesApi`, `audioApi`, `reportsApi`) |
+| `src/App.tsx` | React Router setup: `/login`, `/register`, `/`, `/cases/:id`, `/reports` |
+| `src/api/client.ts` | Typed API client functions (`casesApi`, `audioApi`, `reportsApi`, `authApi`) with JWT injection |
+| `src/context/AuthContext.tsx` | JWT auth state; provides `useAuth()` hook throughout the tree |
+| `src/pages/LoginPage.tsx` | Login form |
+| `src/pages/RegisterPage.tsx` | Registration form |
 | `src/pages/CasesPage.tsx` | List all cases; create new case via `CaseForm` |
 | `src/pages/CaseDetailPage.tsx` | Upload audio, view transcriptions, generate/stream report |
 | `src/pages/ReportsPage.tsx` | All reports overview |
-| `src/components/AudioUploader.tsx` | Drag-and-drop file upload **or** live browser microphone recording via `MediaRecorder` API |
+| `src/components/AudioUploader.tsx` | Drag-and-drop file upload **or** live browser microphone recording via WebSocket streaming |
 | `src/components/ReportEditor.tsx` | Inline-edit clinical sections; Finalize to read-only |
 | `src/components/StreamingReportViewer.tsx` | Consumes the SSE stream and renders tokens progressively |
-| `src/components/Layout.tsx` | Top navigation shell |
+| `src/components/Layout.tsx` | Top navigation shell with logout |
 | `src/types/index.ts` | TypeScript types matching the backend Pydantic schemas |
 
 Vite proxies all `/api/*` requests to `http://localhost:8000` in development, so no CORS configuration is needed locally.
 
 ### PostgreSQL
 
-All persistent state is stored in a single PostgreSQL 16 database (`medispeech`). The schema is managed by Alembic; the initial migration is in `alembic/versions/001_initial_schema.py`.
+All persistent state is stored in a single PostgreSQL 16 database (`medispeech`). The schema is created automatically on startup via SQLAlchemy's `create_all` — no manual migration step required for development.
 
 ### Langfuse (v2)
 
@@ -191,11 +200,20 @@ reports
 
 All routes are prefixed with `/api`. Detailed interactive docs at `http://localhost:8000/docs`.
 
+All endpoints except `/api/auth/*` require `Authorization: Bearer <token>`.
+
 ### Health
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Returns `{"status": "healthy", ...}` |
+
+### Auth (`/api/auth`)
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| POST | `/api/auth/register` | `{email, name, password}` | `{access_token, token_type}` 201 |
+| POST | `/api/auth/login` | `{email, password}` | `{access_token, token_type}` |
 
 ### Cases (`/api/cases`)
 
@@ -212,6 +230,9 @@ All routes are prefixed with `/api`. Detailed interactive docs at `http://localh
 | Method | Path | Body / Params | Response |
 |--------|------|---------------|----------|
 | POST | `/api/audio/{case_id}/upload` | multipart `file` | `{audio_file_id, transcription_id, text, confidence}` |
+| POST | `/api/audio/{case_id}/upload/stream` | multipart `file` | SSE stream of `{type: "segment" \| "done" \| "error"}` |
+| WS | `/api/audio/{case_id}/ws` | binary audio chunks + `{"type":"end"}` | real-time partial text + final `{transcription_id, audio_file_id}` |
+| POST | `/api/audio/preview` | multipart `file` | `{text}` (no DB write) |
 | GET | `/api/audio/{case_id}/transcriptions` | — | transcription list |
 | GET | `/api/audio/{transcription_id}` | — | transcription object or 404 |
 
@@ -253,16 +274,17 @@ After the stream closes, call `POST /api/reports/stream/{transcription_id}/save`
 
 ### Microservice APIs
 
-These are called internally by the FastAPI backend. They are not exposed to the browser.
+These are called internally by the FastAPI backend only. They have no host-facing port in Docker Compose.
 
-**Transcription service** (`http://localhost:8001`)
+**Transcription service** (internal: `http://transcription:8001`)
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
 | GET | `/health` | — | `{"status": "healthy", "service": "transcription"}` |
 | POST | `/transcribe` | multipart `file` | `{text, confidence, model}` |
+| WS | `/ws/transcribe` | binary audio chunks | partial text events + `{"type":"final", ...}` |
 
-**LLM service** (`http://localhost:8002`)
+**LLM service** (internal: `http://llm:8002`)
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
@@ -289,8 +311,8 @@ docker compose up -d postgres langfuse-postgres langfuse-server transcription ll
 This starts:
 - PostgreSQL at `localhost:5432` (`medispeech` database)
 - Langfuse at `http://localhost:3000`
-- Transcription service at `http://localhost:8001` (downloads Whisper `base` model on first start)
-- LLM service at `http://localhost:8002` (downloads `microsoft/BioGPT` on first start)
+- Transcription service (internal, no host port) — downloads Whisper `base` model on first start
+- LLM service (internal, no host port) — downloads `microsoft/BioGPT` on first start
 
 > The ML services download models from HuggingFace/OpenAI on first boot. Allow a few minutes. Subsequent starts are instant because Docker volumes cache the model weights.
 
@@ -316,14 +338,7 @@ LANGFUSE_PUBLIC_KEY=pk-lf-dev
 LANGFUSE_SECRET_KEY=sk-lf-dev
 ```
 
-### Step 4 — Run database migrations
-
-```bash
-cd backend
-uv run alembic upgrade head
-```
-
-### Step 5 — Start the API
+### Step 4 — Start the API
 
 ```bash
 cd backend
@@ -334,7 +349,9 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Interactive docs: `http://localhost:8000/docs`
 - Health check: `http://localhost:8000/health`
 
-### Step 6 — Start the frontend
+The API creates all database tables automatically on first startup — no migration step required.
+
+### Step 5 — Start the frontend
 
 ```bash
 cd frontend
@@ -359,8 +376,8 @@ Services started:
 | Container | URL | Description |
 |-----------|-----|-------------|
 | `medispeech-api` | `http://localhost:8000` | FastAPI application |
-| `medispeech-transcription` | `http://localhost:8001` | Whisper transcription service |
-| `medispeech-llm` | `http://localhost:8002` | BioGPT LLM service |
+| `medispeech-transcription` | internal only | Whisper transcription service (no host port) |
+| `medispeech-llm` | internal only | BioGPT LLM service (no host port) |
 | `medispeech-langfuse` | `http://localhost:3000` | Observability dashboard |
 | `medispeech-postgres` | `localhost:5432` | Application database |
 | `medispeech-langfuse-postgres` | — | Langfuse-only database (internal) |
@@ -473,6 +490,8 @@ The Ingress assumes an Nginx Ingress Controller is installed and exposes the API
 | `LANGFUSE_HOST` | `http://localhost:3000` | Langfuse server URL |
 | `LANGFUSE_PUBLIC_KEY` | `pk-lf-dev` | Langfuse public key |
 | `LANGFUSE_SECRET_KEY` | `sk-lf-dev` | Langfuse secret key |
+| `JWT_SECRET` | *(required in non-dev)* | HS256 signing secret — minimum 32 chars, must not be the default value outside `ENV=development` |
+| `JWT_EXPIRE_MINUTES` | `1440` | Token lifetime (default 24 h) |
 
 ### Transcription service (`services/transcription/app/config.py`)
 
