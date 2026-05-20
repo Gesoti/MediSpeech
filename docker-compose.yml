@@ -25,8 +25,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
-      NEXTAUTH_SECRET: REDACTED
-      SALT: REDACTED
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      SALT: ${SALT}
       NEXTAUTH_URL: http://localhost:3000
       TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"

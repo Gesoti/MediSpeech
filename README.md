@@ -475,6 +475,21 @@ The Ingress assumes an Nginx Ingress Controller is installed and exposes the API
 
 ## 9. Environment variables
 
+### Required secrets (must be set before running)
+
+These variables have no safe defaults and must be provided in your `.env` or shell environment:
+
+| Variable | Used by | Description |
+|----------|---------|-------------|
+| `NEXTAUTH_SECRET` | Langfuse (`docker-compose.yml`) | Random secret for NextAuth session signing |
+| `SALT` | Langfuse (`docker-compose.yml`) | Random salt for Langfuse password hashing |
+| `JWT_SECRET` | FastAPI backend | HS256 signing secret — minimum 32 chars |
+| `HF_TOKEN` | Transcription / LLM services | HuggingFace token — required for gated models, optional for public ones |
+| `LANGFUSE_PUBLIC_KEY` | Backend + microservices | Langfuse project public key |
+| `LANGFUSE_SECRET_KEY` | Backend + microservices | Langfuse project secret key |
+
+---
+
 ### API (`backend/app/config.py`)
 
 | Variable | Default | Description |
